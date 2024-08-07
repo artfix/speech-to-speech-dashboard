@@ -1,0 +1,3 @@
+docs/assets/endpoint-swap-dark.gif !text !filter !merge !diff
+docs/assets/endpoint-swap-light.gif !text !filter !merge !diff
+src/speech_to_speech/TTS/ref_audio.wav !text !filter !merge !diff
