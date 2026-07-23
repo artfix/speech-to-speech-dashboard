@@ -43,6 +43,14 @@ phonemizer-fork>=3.3.2
 faster-qwen3-tts>=0.3.2
 
 [chatterbox]
+s3tokenizer
+conformer==0.3.2
+resemble-perth
+diffusers
+omegaconf
+pykakasi
+pyloudnorm
+onnx
 
 [chattts]
 ChatTTS>=0.1.1

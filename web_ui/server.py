@@ -213,9 +213,19 @@ def api_reset() -> dict[str, Any]:
 
 
 def _chatterbox_installed() -> bool:
-    """Best-effort probe for the optional chatterbox-tts package."""
+    """Best-effort probe for the optional chatterbox-tts package.
+
+    The top-level ``import chatterbox`` is not enough on its own: chatterbox
+    pulls in ``onnx`` at import time, and onnx in turn pulls in
+    ``ml_dtypes`` (a transitive dep). If the user installed chatterbox
+    with ``--no-deps`` and didn't separately install ml_dtypes, the
+    top-level import succeeds but actually loading the model crashes
+    later. Importing ``chatterbox.tts.ChatterboxTTS`` exercises the full
+    import chain and surfaces that case here.
+    """
     try:
         import chatterbox  # type: ignore[import-not-found]  # noqa: F401
+        import chatterbox.tts  # type: ignore[import-not-found]  # noqa: F401
 
         return True
     except ImportError:
@@ -233,17 +243,24 @@ def _chatterbox_install_command() -> str:
 
     ``chatterbox-tts==0.1.7`` pins ``transformers==5.2.0`` and
     ``torchaudio==2.6.0`` strictly, which would downgrade the rest of this
-    project on most platforms. We install ``chatterbox-tts`` with
+    project on most platforms. So we install ``chatterbox-tts`` with
     ``--no-deps`` and then re-add the chatterbox-specific runtime deps
     (s3tokenizer, conformer, diffusers, etc.) that the package expects but
     pip cannot resolve alongside the project's other pins. The
     ``transformers==5.2.0`` and ``torchaudio==2.6.0`` lines are intentionally
     NOT included -- the project's existing pins (which work with the
     chatterbox code in practice) take precedence.
+
+    The companion packages (s3tokenizer, conformer, etc.) are installed
+    WITHOUT ``--no-deps`` so they pull in their normal transitive deps
+    (ml_dtypes for onnx, etc.). Without this, onnx imports fail at
+    runtime with ``ModuleNotFoundError: No module named 'ml_dtypes'``,
+    which makes the dashboard's "_chatterbox_installed" probe fail
+    even after a successful install.
     """
     return (
-        "uv pip install --no-deps chatterbox-tts==0.1.7 "
-        "s3tokenizer conformer==0.3.2 resemble-perth "
+        "uv pip install --no-deps chatterbox-tts==0.1.7 && "
+        "uv pip install s3tokenizer conformer==0.3.2 resemble-perth "
         "diffusers omegaconf pykakasi pyloudnorm onnx"
     )
 

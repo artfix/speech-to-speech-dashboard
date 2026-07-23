@@ -61,6 +61,14 @@ Requires-Dist: transformers>=4.57.0; extra == "facebook-mms"
 Provides-Extra: faster-whisper
 Requires-Dist: faster-whisper>=1.0.3; extra == "faster-whisper"
 Provides-Extra: chatterbox
+Requires-Dist: s3tokenizer; extra == "chatterbox"
+Requires-Dist: conformer==0.3.2; extra == "chatterbox"
+Requires-Dist: resemble-perth; extra == "chatterbox"
+Requires-Dist: diffusers; extra == "chatterbox"
+Requires-Dist: omegaconf; extra == "chatterbox"
+Requires-Dist: pykakasi; extra == "chatterbox"
+Requires-Dist: pyloudnorm; extra == "chatterbox"
+Requires-Dist: onnx; extra == "chatterbox"
 Provides-Extra: kokoro
 Requires-Dist: kokoro>=0.9.2; platform_system != "Darwin" and extra == "kokoro"
 Provides-Extra: language-detection
@@ -81,6 +89,17 @@ Requires-Dist: websockets>=12.0; extra == "websocket"
 Provides-Extra: whisper-mlx
 Requires-Dist: lightning-whisper-mlx>=0.0.10; platform_system == "Darwin" and extra == "whisper-mlx"
 Dynamic: license-file
+
+---
+title: speech-to-speech
+emoji: 🎙️
+colorFrom: indigo
+colorTo: purple
+sdk: static
+app_file: index.html
+pinned: false
+short_description: Realtime voice agent. Dashboard + Reachy Mini app.
+---
 
 <div align="center">
   <div>&nbsp;</div>
