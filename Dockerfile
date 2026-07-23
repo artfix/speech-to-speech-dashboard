@@ -1,27 +1,17 @@
-FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+# HF Space entry point — serves the demo (Reachy Mini conversation UI)
+# on $PORT (default 7860). The pipeline Dockerfiles (CUDA + uv sync) live
+# at Dockerfile.pipeline and Dockerfile.pipeline.arm64 and are unrelated
+# to the Space; this file exists because HF Spaces builds the root
+# Dockerfile. The demo's own Dockerfile at demo/Dockerfile is equivalent.
+FROM python:3.11-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV PATH="/usr/src/app/.venv/bin:${PATH}"
+WORKDIR /app
 
-WORKDIR /usr/src/app
+COPY demo/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install packages
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        git \
-        libportaudio2 \
-        libsndfile1 \
-        python3 \
-        python3-pip \
-        python3-venv \
-    && rm -rf /var/lib/apt/lists/*
-RUN python3 -m pip install --no-cache-dir --break-system-packages uv
+COPY demo/ ./
 
-COPY pyproject.toml README.md LICENSE MANIFEST.in ./
-RUN uv sync --python /usr/bin/python3 --no-install-project --no-dev
+EXPOSE 7860
 
-COPY . .
-RUN uv sync --python /usr/bin/python3 --no-dev
-RUN python -c "import nltk; nltk.download('punkt_tab'); nltk.download('averaged_perceptron_tagger_eng')"
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7860"]

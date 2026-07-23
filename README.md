@@ -1,3 +1,15 @@
+---
+title: speech-to-speech
+emoji: 🎙️
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+app_file: demo/server.py
+pinned: false
+short_description: Realtime voice agent. Dashboard + Reachy Mini app.
+---
+
 <div align="center">
   <div>&nbsp;</div>
   <img src="https://raw.githubusercontent.com/huggingface/speech-to-speech/main/logo.png" width="600"/>
