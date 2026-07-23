@@ -1,0 +1,21 @@
+/* Cyberpunk Neon — cyan + magenta on near-black. Default theme. */
+:root {
+    --bg: #0a0a14;
+    --bg-elev: #11111d;
+    --bg-elev-2: #181828;
+    --border: #2a2a3e;
+    --text: #e0e0ff;
+    --text-dim: #8888aa;
+    --accent: #00f0ff;
+    --accent-2: #ff00d4;
+    --accent-3: #ffcc00;
+    --success: #00ff88;
+    --warning: #ffaa00;
+    --error: #ff3355;
+    --info: #00aaff;
+    --debug: #777799;
+    --shadow: rgba(0, 240, 255, 0.18);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

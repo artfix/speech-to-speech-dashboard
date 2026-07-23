@@ -1,0 +1,21 @@
+/* Blade Runner — amber + red on near-black, gritty. */
+:root {
+    --bg: #0a0805;
+    --bg-elev: #15100a;
+    --bg-elev-2: #1f1810;
+    --border: #3a2818;
+    --text: #f0d8a0;
+    --text-dim: #8a7040;
+    --accent: #ff8c1a;
+    --accent-2: #ff3300;
+    --accent-3: #ffcc00;
+    --success: #ffaa00;
+    --warning: #ff5500;
+    --error: #ff0033;
+    --info: #cc7700;
+    --debug: #665038;
+    --shadow: rgba(255, 140, 26, 0.22);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

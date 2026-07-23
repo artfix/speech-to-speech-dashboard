@@ -1,0 +1,21 @@
+/* Hacker Terminal — green/amber phosphor CRT on black. */
+:root {
+    --bg: #000000;
+    --bg-elev: #0a0a00;
+    --bg-elev-2: #141405;
+    --border: #2a2a18;
+    --text: #ffaa00;
+    --text-dim: #886600;
+    --accent: #ffaa00;
+    --accent-2: #ffcc00;
+    --accent-3: #ffffaa;
+    --success: #ffcc00;
+    --warning: #ff6600;
+    --error: #ff0033;
+    --info: #ffaa00;
+    --debug: #664400;
+    --shadow: rgba(255, 170, 0, 0.3);
+    --glow: 0 0 6px var(--shadow);
+    --font: 'VT323', 'Courier New', 'JetBrains Mono', monospace;
+    --font-mono: 'VT323', 'Courier New', 'JetBrains Mono', monospace;
+}

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>speech-to-speech dashboard</title>
+    <link id="theme-stylesheet" rel="stylesheet" href="/static/themes/cyberpunk-neon.css">
+    <link rel="stylesheet" href="/static/base.css">
+</head>
+<body>
+    <div class="app">
+        <header class="app-header">
+            <div class="app-title">SPEECH-TO-SPEECH<span class="app-version" id="app-version"></span></div>
+            <div class="app-header-right">
+                <select id="theme-select" class="field-select" style="padding: 4px 8px; font-size: 12px;"></select>
+                <div class="status-pill">
+                    <span class="status-dot" id="status-dot"></span>
+                    <span id="status-text">stopped</span>
+                </div>
+            </div>
+        </header>
+
+        <nav class="sidebar" id="sidebar"></nav>
+
+        <main class="main" id="main"></main>
+    </div>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <div class="modal-backdrop" id="modal-backdrop">
+        <div class="modal" id="modal">
+            <div class="modal-title" id="modal-title"></div>
+            <div class="modal-body" id="modal-body"></div>
+            <div class="modal-actions" id="modal-actions"></div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

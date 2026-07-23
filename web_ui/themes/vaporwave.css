@@ -1,0 +1,21 @@
+/* Vaporwave — pastel pink + cyan on deep purple. */
+:root {
+    --bg: #1f0a3a;
+    --bg-elev: #2a1052;
+    --bg-elev-2: #3a1870;
+    --border: #5a2a90;
+    --text: #ffd9ec;
+    --text-dim: #c0a0d0;
+    --accent: #ff8ad9;
+    --accent-2: #99e6ff;
+    --accent-3: #ffe199;
+    --success: #99ffcc;
+    --warning: #ffcc66;
+    --error: #ff6699;
+    --info: #99e6ff;
+    --debug: #8060a0;
+    --shadow: rgba(255, 138, 217, 0.22);
+    --glow: 0 0 10px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

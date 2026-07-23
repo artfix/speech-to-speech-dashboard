@@ -1,3 +1,86 @@
+Metadata-Version: 2.4
+Name: speech-to-speech
+Version: 0.2.11
+Summary: Low-latency speech-to-speech pipeline
+Author: Hugging Face
+License-Expression: Apache-2.0
+Project-URL: Homepage, https://github.com/huggingface/speech-to-speech
+Project-URL: Repository, https://github.com/huggingface/speech-to-speech
+Project-URL: Issues, https://github.com/huggingface/speech-to-speech/issues
+Keywords: speech-to-speech,voice-agents,speech-recognition,text-to-speech,openai
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Multimedia :: Sound/Audio :: Speech
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: httpx>=0.28.0
+Requires-Dist: nltk==3.9.4
+Requires-Dist: numpy<2.4.4,>=1.26.0; platform_system == "Darwin"
+Requires-Dist: numpy>=1.26.0; platform_system != "Darwin"
+Requires-Dist: openai==2.28.0
+Requires-Dist: pillow>=10.0.0
+Requires-Dist: psutil>=5.9.0
+Requires-Dist: pydantic>=2.0
+Requires-Dist: rich>=13.0
+Requires-Dist: scipy>=1.10.0
+Requires-Dist: sounddevice==0.5.3; platform_system == "Darwin"
+Requires-Dist: sounddevice>=0.5.0; platform_system != "Darwin"
+Requires-Dist: soundfile>=0.13.0; platform_system == "Darwin"
+Requires-Dist: torch==2.11.0; platform_system == "Darwin"
+Requires-Dist: torch>=2.4.0; platform_system != "Darwin"
+Requires-Dist: torchaudio==2.11.0; platform_system == "Darwin"
+Requires-Dist: torchaudio>=2.4.0; platform_system != "Darwin"
+Requires-Dist: transformers==5.6.2; platform_system == "Darwin"
+Requires-Dist: transformers>=4.57.0; platform_system != "Darwin"
+Requires-Dist: uvicorn>=0.30.0
+Requires-Dist: websockets>=12.0
+Requires-Dist: nano-parakeet>=0.2.0; platform_system != "Darwin"
+Requires-Dist: faster-qwen3-tts[ggml]>=0.3.2; platform_system != "Darwin" and platform_system != "Windows"
+Requires-Dist: faster-qwen3-tts>=0.3.2; platform_system == "Windows"
+Requires-Dist: lingua-language-detector>=2.0.2
+Requires-Dist: miniaudio==1.61; platform_system == "Darwin"
+Requires-Dist: mlx==0.31.1; platform_system == "Darwin"
+Requires-Dist: mlx-audio==0.4.2; platform_system == "Darwin"
+Requires-Dist: mlx-lm==0.31.1; platform_system == "Darwin"
+Requires-Dist: mlx-metal==0.31.1; platform_system == "Darwin"
+Requires-Dist: misaki>=0.9.4; platform_system == "Darwin"
+Requires-Dist: espeakng-loader>=0.2.4; platform_system == "Darwin"
+Requires-Dist: spacy>=3.8.4; platform_system == "Darwin"
+Requires-Dist: phonemizer-fork>=3.3.2; platform_system == "Darwin"
+Provides-Extra: chattts
+Requires-Dist: ChatTTS>=0.1.1; extra == "chattts"
+Provides-Extra: facebook-mms
+Requires-Dist: transformers>=4.57.0; extra == "facebook-mms"
+Provides-Extra: faster-whisper
+Requires-Dist: faster-whisper>=1.0.3; extra == "faster-whisper"
+Provides-Extra: kokoro
+Requires-Dist: kokoro>=0.9.2; platform_system != "Darwin" and extra == "kokoro"
+Provides-Extra: language-detection
+Requires-Dist: lingua-language-detector>=2.0.2; extra == "language-detection"
+Provides-Extra: mlx-lm
+Requires-Dist: mlx-lm==0.31.1; platform_system == "Darwin" and extra == "mlx-lm"
+Requires-Dist: mlx-vlm==0.4.1; platform_system == "Darwin" and extra == "mlx-lm"
+Provides-Extra: paraformer
+Requires-Dist: funasr>=1.1.6; extra == "paraformer"
+Requires-Dist: modelscope>=1.17.1; extra == "paraformer"
+Requires-Dist: onnxruntime<1.24; python_version < "3.11" and extra == "paraformer"
+Provides-Extra: pocket
+Requires-Dist: pocket-tts>=0.1.0; extra == "pocket"
+Provides-Extra: webrtc
+Requires-Dist: aiortc>=1.9.0; extra == "webrtc"
+Provides-Extra: websocket
+Requires-Dist: websockets>=12.0; extra == "websocket"
+Provides-Extra: whisper-mlx
+Requires-Dist: lightning-whisper-mlx>=0.0.10; platform_system == "Darwin" and extra == "whisper-mlx"
+Dynamic: license-file
+
 <div align="center">
   <div>&nbsp;</div>
   <img src="https://raw.githubusercontent.com/huggingface/speech-to-speech/main/logo.png" width="600"/>
@@ -23,22 +106,6 @@ This pipeline runs in production as the conversation backend for thousands of [R
 </p>
 
 ## Quickstart
-
-### Option A: Web dashboard (recommended for first-time users)
-
-```bash
-git clone https://github.com/huggingface/speech-to-speech.git
-cd speech-to-speech
-uv sync
-./start_web_ui.sh      # Linux / macOS
-start_web_ui.bat       # Windows
-```
-
-Your browser opens to `http://localhost:8050` with a cyberpunk-styled dashboard. Every CLI flag is exposed in the UI, with explanations, tooltips, a guide, and live log streaming. Save your settings, click Start, talk.
-
-See [`web_ui/README.md`](./web_ui/README.md) for the full guide and [`web_ui/Guide.md`](./web_ui/Guide.md) for the in-app walkthrough.
-
-### Option B: CLI
 
 ```bash
 pip install speech-to-speech
@@ -163,14 +230,7 @@ cd speech-to-speech
 uv sync
 ```
 
-This installs the package in editable mode and makes the `speech-to-speech` and `speech-to-speech-web` console scripts available.
-
-For the dashboard wrapper:
-
-```bash
-./start_web_ui.sh      # Linux / macOS
-start_web_ui.bat       # Windows
-```
+This installs the package in editable mode and makes the `speech-to-speech` CLI available.
 
 ## Supported Components
 

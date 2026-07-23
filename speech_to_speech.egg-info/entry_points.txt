@@ -1,0 +1,3 @@
+[console_scripts]
+speech-to-speech = speech_to_speech.s2s_pipeline:main
+speech-to-speech-web = web_ui.server:main
