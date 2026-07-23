@@ -3,9 +3,8 @@ title: speech-to-speech
 emoji: 🎙️
 colorFrom: indigo
 colorTo: purple
-sdk: docker
-app_port: 7860
-app_file: demo/server.py
+sdk: static
+app_file: index.html
 pinned: false
 short_description: Realtime voice agent. Dashboard + Reachy Mini app.
 ---
