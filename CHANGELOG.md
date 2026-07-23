@@ -7,6 +7,18 @@ own release cadence.
 
 ## [Unreleased] — Web dashboard
 
+### 0.1.2 — 2026-07-23
+
+#### Fixed
+
+- **Theme switcher did nothing.** `index.html` loaded the theme stylesheet
+  BEFORE `base.css`, so `base.css`'s `:root` color variables always won the
+  cascade regardless of which theme was selected. Swapped the `<link>` order
+  and split `base.css`'s `:root` block in two — structural tokens
+  (`--font`, `--radius`, `--transition`) declared first, color fallbacks
+  declared after. The active theme's `:root` rules (loaded last) now win
+  and the dropdown actually repaints the UI in the chosen palette.
+
 ### 0.1.1 — 2026-07-23
 
 First release of the `web_ui/` package: a self-hosted cyberpunk-themed

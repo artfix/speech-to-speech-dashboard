@@ -10,7 +10,18 @@
 }
 
 :root {
-    /* These are overridden by themes. The cyberpunk-neon default. */
+    /* Structural tokens only. Color tokens (--bg, --accent, etc.) are
+       owned by the active theme file (see web_ui/themes/*.css). Themes
+       must be loaded AFTER base.css so their :root declarations win. */
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    --radius: 4px;
+    --transition: 0.15s ease;
+}
+
+/* Fallback color tokens — used only if no theme has loaded yet. Kept
+   short so any theme :root rule (loaded after this file) overrides them. */
+:root {
     --bg: #0a0a14;
     --bg-elev: #11111d;
     --bg-elev-2: #181828;
@@ -27,10 +38,6 @@
     --debug: #888888;
     --shadow: rgba(0, 240, 255, 0.15);
     --glow: 0 0 8px var(--shadow);
-    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
-    --radius: 4px;
-    --transition: 0.15s ease;
 }
 
 html, body {
