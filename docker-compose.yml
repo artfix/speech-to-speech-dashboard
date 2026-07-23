@@ -34,7 +34,7 @@ services:
       - llama
     build:
       context: .
-      dockerfile: ${DOCKERFILE:-Dockerfile.pipeline}
+      dockerfile: ${DOCKERFILE:-Dockerfile}
     command:
       - speech-to-speech
       - --mode
