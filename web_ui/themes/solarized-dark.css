@@ -1,0 +1,21 @@
+/* Solarized Dark — classic Ethan Schoonover palette. Tuned for long reading sessions. */
+:root {
+    --bg: #002b36;
+    --bg-elev: #073642;
+    --bg-elev-2: #0a4452;
+    --border: #586e75;
+    --text: #eee8d5;
+    --text-dim: #93a1a1;
+    --accent: #268bd2;
+    --accent-2: #6c71c4;
+    --accent-3: #b58900;
+    --success: #859900;
+    --warning: #b58900;
+    --error: #dc322f;
+    --info: #2aa198;
+    --debug: #586e75;
+    --shadow: rgba(38, 139, 210, 0.22);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

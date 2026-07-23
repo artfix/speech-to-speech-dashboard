@@ -171,7 +171,6 @@ function buildNavAndTabs() {
         ]);
         nav.appendChild(item);
     }
-    nav.appendChild(el('div', { class: 'theme-credit' }, 'v0.1.0'));
 
     const main = $('#main');
     main.textContent = '';

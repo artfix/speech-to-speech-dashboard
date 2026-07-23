@@ -1,0 +1,21 @@
+/* Paperwhite — light theme. High-contrast black text on warm off-white. */
+:root {
+    --bg: #f5f1e8;
+    --bg-elev: #ebe5d4;
+    --bg-elev-2: #e0d9c4;
+    --border: #c4bba2;
+    --text: #1a1a1a;
+    --text-dim: #5a5a5a;
+    --accent: #0050b3;
+    --accent-2: #c41e3a;
+    --accent-3: #ad6800;
+    --success: #2e7d32;
+    --warning: #b45309;
+    --error: #c62828;
+    --info: #1565c0;
+    --debug: #888888;
+    --shadow: rgba(0, 80, 179, 0.15);
+    --glow: 0 0 4px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

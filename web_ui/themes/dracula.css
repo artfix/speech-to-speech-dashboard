@@ -1,0 +1,21 @@
+/* Dracula — soft purples on dark indigo. Popular palette, easy on the eyes. */
+:root {
+    --bg: #282a36;
+    --bg-elev: #2e303e;
+    --bg-elev-2: #353746;
+    --border: #44475a;
+    --text: #f8f8f2;
+    --text-dim: #9fa0b0;
+    --accent: #bd93f9;
+    --accent-2: #ff79c6;
+    --accent-3: #f1fa8c;
+    --success: #50fa7b;
+    --warning: #f1fa8c;
+    --error: #ff5555;
+    --info: #8be9fd;
+    --debug: #6272a4;
+    --shadow: rgba(189, 147, 249, 0.22);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

@@ -7,6 +7,36 @@ own release cadence.
 
 ## [Unreleased] — Web dashboard
 
+### 0.1.3 — 2026-07-23
+
+#### Added
+
+- **10 new themes** (18 total now in the dropdown, sorted alphabetically).
+  All WCAG-checked: body text on background passes AAA (≥ 7:1) on every
+  theme; the muted `--text-dim` used for labels passes AA on most, AA-large
+  on the intentionally low-contrast `matrix` and `hacker-terminal` (which
+  are designed to look like a phosphor terminal — dim on dim is the point).
+  - `dracula` — soft purples on dark indigo
+  - `nord` — arctic blue-grey, very low eye-strain
+  - `solarized-dark` — classic Ethan Schoonover palette
+  - `gruvbox` — warm retro amber + olive on near-black
+  - `tokyo-night` — soft blue with pink and cyan accents
+  - `one-dark` — Atom editor's signature palette
+  - `monokai` — iconic Sublime Text palette
+  - `catppuccin` — soft pastels on warm dark
+  - `paperwhite` — light theme, dark text on warm off-white
+  - `high-contrast` — black + white + bright yellow, max readability
+
+#### Fixed
+
+- **Log console hardcoded to pure black** in `base.css` (`.log-console
+  { background: #000 }`) — replaced with `var(--bg)` so the console
+  now picks up the active theme's background.
+- **Log line colors hardcoded** (`#cccccc`, `#888888`) — replaced
+  with `var(--text)` and `var(--text-dim)` so INFO/DEBUG/OTHER lines
+  follow the active theme. WARNING/ERROR/CRITICAL already used
+  theme tokens.
+
 ### 0.1.2 — 2026-07-23
 
 #### Fixed

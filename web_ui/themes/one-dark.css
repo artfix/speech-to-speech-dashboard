@@ -1,0 +1,21 @@
+/* One Dark — Atom editor's signature palette. */
+:root {
+    --bg: #282c34;
+    --bg-elev: #2c313a;
+    --bg-elev-2: #353b45;
+    --border: #3e4452;
+    --text: #abb2bf;
+    --text-dim: #7f848e;
+    --accent: #61afef;
+    --accent-2: #c678dd;
+    --accent-3: #e5c07b;
+    --success: #98c379;
+    --warning: #e5c07b;
+    --error: #e06c75;
+    --info: #56b6c2;
+    --debug: #5c6370;
+    --shadow: rgba(97, 175, 239, 0.22);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

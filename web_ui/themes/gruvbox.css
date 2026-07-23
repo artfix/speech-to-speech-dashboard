@@ -1,0 +1,21 @@
+/* Gruvbox Dark — warm retro amber and olive on near-black. */
+:root {
+    --bg: #1d2021;
+    --bg-elev: #282828;
+    --bg-elev-2: #32302f;
+    --border: #504945;
+    --text: #ebdbb2;
+    --text-dim: #a89984;
+    --accent: #fabd2f;
+    --accent-2: #fe8019;
+    --accent-3: #b8bb26;
+    --success: #b8bb26;
+    --warning: #fabd2f;
+    --error: #fb4934;
+    --info: #83a598;
+    --debug: #7c6f64;
+    --shadow: rgba(250, 189, 47, 0.22);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

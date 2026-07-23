@@ -1,0 +1,21 @@
+/* Monokai — iconic Sublime Text palette. */
+:root {
+    --bg: #272822;
+    --bg-elev: #2f302a;
+    --bg-elev-2: #383830;
+    --border: #49483e;
+    --text: #f8f8f2;
+    --text-dim: #a59f85;
+    --accent: #66d9ef;
+    --accent-2: #f92672;
+    --accent-3: #e6db74;
+    --success: #a6e22e;
+    --warning: #e6db74;
+    --error: #f92672;
+    --info: #66d9ef;
+    --debug: #75715e;
+    --shadow: rgba(102, 217, 239, 0.22);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}
