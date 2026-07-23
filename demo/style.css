@@ -574,6 +574,90 @@ a:hover {
   min-height: 0;
 }
 
+/* ─── Version announcement banner ─────────────────────────────────────── */
+
+/* Slim callout above the orb. Sits inside .stage (flex column, gap 20px),
+ * so it just needs to be a full-width card with a left accent stripe. */
+.version-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: min(720px, 100%);
+  padding: 12px 16px 12px 18px;
+  background: linear-gradient(
+    135deg,
+    rgba(139, 125, 255, 0.10),
+    rgba(34, 211, 238, 0.08)
+  );
+  border: 1px solid rgba(139, 125, 255, 0.28);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.45;
+  text-align: left;
+  box-shadow: 0 4px 22px rgba(0, 0, 0, 0.18);
+}
+.version-banner-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.version-banner-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.version-banner-text a {
+  color: var(--accent-2);
+  text-decoration: none;
+}
+.version-banner-text a:hover {
+  text-decoration: underline;
+}
+.version-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  background: var(--accent);
+  color: #0a0b10;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.version-banner-cta {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.version-banner-cta:hover {
+  background: var(--accent);
+  color: #0a0b10;
+  text-decoration: none;
+}
+@media (max-width: 560px) {
+  .version-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .version-banner-cta {
+    align-self: flex-end;
+  }
+}
+
 /* ─── Central circle ──────────────────────────────────────────────────── */
 
 /* Wraps the orb and its two side controls so they stay aligned on one row. */
