@@ -73,14 +73,15 @@ faster-whisper = [
     "faster-whisper>=1.0.3",
 ]
 chatterbox = [
-    # chatterbox-tts==0.1.7 pins transformers==5.2.0 and torchaudio==2.6.0 strictly,
-    # which conflicts with the rest of this project (transformers>=4.57.0, torchaudio
-    # varies by platform). We use --no-deps and pull the small companion packages that
-    # chatterbox-tts actually needs at runtime. The dashboard's install endpoint runs
-    # the same `uv pip install --no-deps ...` command for users who want the one-click
-    # install experience; the static marker here keeps `uv sync --extra chatterbox`
-    # working for users who want everything in one shot.
-    "chatterbox-tts==0.1.7",
+    # chatterbox-tts==0.1.7 pins transformers==5.2.0 and torchaudio==2.6.0
+    # strictly, which conflicts with the rest of this project
+    # (transformers==5.6.2 on Darwin, torchaudio varies by platform).
+    # uv's resolver can't satisfy both, so chatterbox-tts itself is NOT
+    # listed here. The dashboard's install endpoint runs
+    # `uv pip install --no-deps chatterbox-tts==0.1.7 ...` for users
+    # who want the one-click install. The packages listed here are the
+    # small companion deps chatterbox-tts needs at runtime that don't
+    # conflict.
     "s3tokenizer",
     "conformer==0.3.2",
     "resemble-perth",
