@@ -187,6 +187,7 @@
         <!-- General intro to the speech-to-speech project -->
         <div class="about-intro">
           <p>Speech-to-speech is Hugging Face's open framework for real-time voice agents. Rather than one end-to-end model, it chains four open models from the Hub (speech detection, transcription, a vision-language model, and synthesis), so any stage can be swapped or run locally. This demo wires that pipeline to hosted inference.</p>
+          <p style="margin-top: 12px;">This Space is the <strong>ArtFix0 fork</strong> with a self-hosted <a href="/web_ui/">browser dashboard</a>, a <a href="https://github.com/resemble-ai/chatterbox" target="_blank" rel="noopener">Chatterbox</a> TTS backend (voice cloning from a 5-second reference sample), 18 cyberpunk themes, and a hot-unload button to free the TTS model from RAM without killing the pipeline.</p>
           <a class="about-repo" href="https://github.com/huggingface/speech-to-speech" target="_blank" rel="noopener">View the project on GitHub<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
         </div>
 
@@ -214,6 +215,7 @@
               <span class="pipe-tag">TTS</span>
               <span class="pipe-job">speaks it back</span>
               <a class="pipe-model" href="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" target="_blank" rel="noopener">Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
+              <span class="pipe-note">· or <a class="pipe-model" href="https://github.com/resemble-ai/chatterbox" target="_blank" rel="noopener"><strong>Chatterbox</strong> with voice cloning<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a> (v0.2.0)</span>
             </li>
             <li class="pipe-endpoint">The orb replies</li>
           </ol>

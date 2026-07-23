@@ -322,6 +322,107 @@ html, body {
     display: block;
 }
 
+/* Disabled-when: variant-conditional fields. Chatterbox TTS uses this to
+   gray out parameters that don't apply to the currently-selected model
+   variant. The class is toggled from app.js's applyDisabledStates(). */
+.field-disabled {
+    opacity: 0.45;
+}
+.field-disabled input,
+.field-disabled select,
+.field-disabled textarea,
+.field-disabled .field-checkbox {
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* Voice library: the card grid lives inside the TTS tab. Cards are
+   flexible-width so they wrap nicely on different screens. */
+.voice-library-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 20px 0 12px 0;
+    gap: 12px;
+}
+.voice-library-header h2 {
+    margin: 0;
+    font-size: 16px;
+    color: var(--text);
+}
+.voice-card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+}
+.voice-card {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: border-color 120ms ease;
+}
+.voice-card.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+}
+.voice-card-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text);
+}
+.voice-card-badge {
+    background: var(--accent);
+    color: var(--bg);
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 8px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+.voice-card-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 12px;
+    color: var(--text-dim);
+    flex: 1;
+}
+.voice-card-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.voice-card-actions .btn {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    padding: 4px 8px;
+}
+.install-cmd {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    font-family: 'Menlo', 'Consolas', monospace;
+    font-size: 12px;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 8px 0;
+}
+.btn-small {
+    padding: 4px 8px !important;
+    font-size: 11px !important;
+}
+
 /* ---- Buttons ---- */
 
 .btn {

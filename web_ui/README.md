@@ -21,7 +21,8 @@ The browser opens to `http://localhost:8050`. If it doesn't (headless box, no `x
 - **Tabs:** Mode, VAD, STT, LLM, TTS, Advanced, Status & Logs, Guide, Settings, Control.
 - **Auto-generated forms.** Every CLI flag the pipeline knows about shows up in the relevant tab. Help text is shown next to every field via a `?` button.
 - **Conditional sub-forms.** When you change `--tts` from `qwen3` to `pocket`, the TTS fields swap to Pocket TTS's settings. Same for STT and LLM.
-- **8 cyberpunk themes.** Cyberpunk Neon (default), Matrix, Synthwave, Blade Runner, Tron, Vaporwave, Hacker Terminal, Dark Glass. Switch from the top-right dropdown.
+- **Voice library (Chatterbox TTS).** When you pick `chatterbox` as the TTS, a card grid appears for cloning voices from a short reference audio. Set active / Test / Delete all in the dashboard.
+- **18 cyberpunk themes.** Cyberpunk Neon (default), Matrix, Synthwave, Blade Runner, Tron, Vaporwave, Hacker Terminal, Dark Glass, plus ten more. Switch from the top-right dropdown.
 - **Save / Reset / Import / Export** the settings JSON. The file lives at `web_ui_settings.json` in the repo root.
 - **Start / Stop / Restart** buttons for the pipeline. The pipeline is spawned as a subprocess with the current settings.
 - **Live logs** in the Status & Logs tab. Filter by level (ALL / INFO / WARNING / ERROR). Toggle Verbose restarts the pipeline with `--log-level debug` (with a confirmation).

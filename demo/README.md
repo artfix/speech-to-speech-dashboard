@@ -6,7 +6,7 @@ colorTo: purple
 sdk: docker
 app_port: 7860
 pinned: false
-short_description: Voice chat over WebSocket against a HF speech-to-speech
+short_description: Voice chat over WebSocket against a HF speech-to-speech backend. v0.2.0 adds Chatterbox TTS with voice cloning.
 hf_oauth: true
 ---
 
@@ -17,6 +17,12 @@ Browser voice-chat UI for the
 backend, speaking the OpenAI Realtime **GA** protocol over **WebSocket**
 (default) or **WebRTC** (Settings → Transport, env-pinned deploys only — see
 [WebRTC transport](#webrtc-transport)).
+
+## v0.2.0 additions (this fork)
+
+- **Chatterbox TTS** — Resemble AI's voice-cloning model, the 6th TTS backend. Upload a 5–30s reference audio in the dashboard's Voice Library, set it active, and the robot speaks in that voice. Three variants: `chatterbox` (English 500M, best quality), `chatterbox-turbo` (350M, low latency), `chatterbox-nano` (110M, CPU-friendly).
+- **Self-hosted browser dashboard** at `/web_ui/` — start/stop the pipeline, edit every CLI flag in a form, watch the live log, see the Realtime pool status. 18 cyberpunk themes, voice library with clone/list/set-active/test/delete, hot-unload button to free the TTS model from RAM.
+- The dashboard introspects the pipeline's argument dataclasses at runtime — every CLI flag the pipeline knows about shows up in the UI automatically.
 
 ## Quick start (local)
 

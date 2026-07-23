@@ -60,6 +60,7 @@ Provides-Extra: facebook-mms
 Requires-Dist: transformers>=4.57.0; extra == "facebook-mms"
 Provides-Extra: faster-whisper
 Requires-Dist: faster-whisper>=1.0.3; extra == "faster-whisper"
+Provides-Extra: chatterbox
 Provides-Extra: kokoro
 Requires-Dist: kokoro>=0.9.2; platform_system != "Darwin" and extra == "kokoro"
 Provides-Extra: language-detection
@@ -106,6 +107,22 @@ This pipeline runs in production as the conversation backend for thousands of [R
 </p>
 
 ## Quickstart
+
+### Option A: Web dashboard (recommended for first-time users)
+
+```bash
+git clone https://github.com/huggingface/speech-to-speech.git
+cd speech-to-speech
+uv sync
+./start_web_ui.sh      # Linux / macOS
+start_web_ui.bat       # Windows
+```
+
+Your browser opens to `http://localhost:8050` with a cyberpunk-styled dashboard. Every CLI flag is exposed in the UI, with explanations, tooltips, a guide, and live log streaming. Save your settings, click Start, talk.
+
+See [`web_ui/README.md`](./web_ui/README.md) for the full guide and [`web_ui/Guide.md`](./web_ui/Guide.md) for the in-app walkthrough.
+
+### Option B: CLI
 
 ```bash
 pip install speech-to-speech
@@ -230,7 +247,14 @@ cd speech-to-speech
 uv sync
 ```
 
-This installs the package in editable mode and makes the `speech-to-speech` CLI available.
+This installs the package in editable mode and makes the `speech-to-speech` and `speech-to-speech-web` console scripts available.
+
+For the dashboard wrapper:
+
+```bash
+./start_web_ui.sh      # Linux / macOS
+start_web_ui.bat       # Windows
+```
 
 ## Supported Components
 

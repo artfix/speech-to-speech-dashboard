@@ -37,6 +37,9 @@ from speech_to_speech.arguments_classes.chat_completions_language_model_argument
     ChatCompletionsLanguageModelHandlerArguments,
 )
 from speech_to_speech.arguments_classes.chat_tts_arguments import ChatTTSHandlerArguments
+from speech_to_speech.arguments_classes.chatterbox_tts_arguments import (
+    ChatterboxTTSHandlerArguments,
+)
 from speech_to_speech.arguments_classes.facebookmms_tts_arguments import FacebookMMSTTSHandlerArguments
 from speech_to_speech.arguments_classes.faster_whisper_stt_arguments import (
     FasterWhisperSTTHandlerArguments,
@@ -205,6 +208,52 @@ def _ui_for_type(tp: str) -> str:
     }.get(tp, "text")
 
 
+def _apply_chatterbox_disabled_when(fields: list[dict[str, Any]]) -> None:
+    """Stamp variant-conditional fields on the Chatterbox TTS subgroup in place.
+
+    Chatterbox has 4 model variants with different knob sets:
+
+    - ``chatterbox`` (English 500M) and ``chatterbox-multilingual``: use
+      ``exaggeration`` / ``cfg_weight`` / ``repetition_penalty`` / ``min_p``.
+    - ``chatterbox-turbo`` and ``chatterbox-nano``: single-step decoder, use
+      ``top_k`` instead. The English knobs are accepted but logged as ignored
+      upstream; we still show them grayed out so the user understands why.
+    - Only ``chatterbox-multilingual`` uses ``language_id``.
+
+    The frontend reads ``disabled_when`` and grays the input when the watched
+    field's value matches the rule.
+    """
+    variant = "chatterbox_model_variant"
+    turbo_or_nano = {"chatterbox-turbo", "chatterbox-nano"}
+    english_or_mtl = {"chatterbox", "chatterbox-multilingual"}
+
+    # Knobs that only affect English / Multilingual (the standard decoder).
+    english_only = {
+        "chatterbox_exaggeration",
+        "chatterbox_cfg_weight",
+        "chatterbox_repetition_penalty",
+        "chatterbox_min_p",
+    }
+    # Knob that only affects Turbo / Nano (single-step decoder).
+    turbo_only = {"chatterbox_top_k"}
+    # Knob that only affects the Multilingual variant.
+    mtl_only = {"chatterbox_language_id"}
+
+    by_name = {f["name"]: f for f in fields}
+    for name in english_only:
+        if name in by_name:
+            by_name[name]["disabled_when"] = {"field": variant, "in": sorted(turbo_or_nano)}
+    for name in turbo_only:
+        if name in by_name:
+            by_name[name]["disabled_when"] = {"field": variant, "in": sorted(english_or_mtl)}
+    for name in mtl_only:
+        if name in by_name:
+            by_name[name]["disabled_when"] = {
+                "field": variant,
+                "in": sorted(set(english_or_mtl | turbo_or_nano) - {"chatterbox-multilingual"}),
+            }
+
+
 # Per-backend groups. Each tuple is (backend_value, dataclass, display_title).
 # The key ``visible_when`` carries the rule that the frontend uses to know when
 # to render this sub-form (e.g. only show qwen3-tts fields when ``--tts`` is
@@ -300,6 +349,12 @@ TTS_BACKENDS: list[tuple[str, type, str, dict[str, Any]]] = [
         FacebookMMSTTSHandlerArguments,
         "Facebook MMS TTS (multilingual)",
         {"field": "tts", "equals": "facebookMMS"},
+    ),
+    (
+        "chatterbox",
+        ChatterboxTTSHandlerArguments,
+        "Chatterbox TTS (voice cloning, 3 variants)",
+        {"field": "tts", "equals": "chatterbox"},
     ),
 ]
 
@@ -408,12 +463,21 @@ def get_full_schema() -> dict[str, Any]:
     ]
     tts_subgroups = []
     for value, cls, title, visible in TTS_BACKENDS:
+        sub_fields = _schema_for_class(cls, group="tts", title=title)
+        # Chatterbox has variant-conditional parameters (some knobs only affect
+        # the English/Multilingual variants, others only the Turbo/Nano). We
+        # tag the affected fields with a `disabled_when` rule so the frontend
+        # grays them out when the user picks a different variant. The rule
+        # shape is ``{field: <flag-field-name>, in: [<values>]}`` and lives
+        # on the field spec; the renderer reads it.
+        if value == "chatterbox":
+            _apply_chatterbox_disabled_when(sub_fields)
         tts_subgroups.append(
             {
                 "id": f"tts_{value}",
                 "title": title,
                 "visible_when": visible,
-                "fields": _schema_for_class(cls, group="tts", title=title),
+                "fields": sub_fields,
             }
         )
     groups.append(
@@ -487,6 +551,110 @@ def get_defaults() -> dict[str, Any]:
 _NON_FORWARDED = {"theme", "env"}
 
 
+# CLI flags that only apply to specific backends. If the user picks a
+# different backend, forwarding these would make HfArgumentParser raise
+# "Some specified arguments are not used by the HfArgumentParser".
+#
+# Local Ollama (chat-completions) and OpenAI cloud (responses-api /
+# chat-completions) DO NOT need the local LLM flags (--llm-device,
+# --llm-gen-*, etc.) -- those are only valid for the in-process
+# transformers backend. We drop them when the user is on an OpenAI-
+# compatible path.
+_LOCAL_LLM_ONLY_ARGS = {
+    "--llm-device",
+    "--llm-torch-dtype",
+    "--llm-gen-max-new-tokens",
+    "--llm-gen-min-new-tokens",
+    "--llm-gen-temperature",
+    "--llm-gen-do-sample",
+    "--llm-is-vlm",
+}
+
+_TTS_ONLY_ARGS: dict[str, set[str]] = {
+    "qwen3": {
+        "--qwen3-tts-model-name",
+        "--qwen3-tts-backend",
+        "--qwen3-tts-device",
+        "--qwen3-tts-dtype",
+        "--qwen3-tts-mlx-quantization",
+        "--qwen3-tts-blocksize",
+        "--qwen3-tts-max-new-tokens",
+        "--qwen3-tts-language",
+        "--qwen3-tts-speaker",
+        "--qwen3-tts-instruct",
+        "--qwen3-tts-ref-audio",
+        "--qwen3-tts-ref-text",
+        "--qwen3-tts-attn-implementation",
+        "--qwen3-tts-non-streaming-mode",
+        "--qwen3-tts-parity-mode",
+        "--qwen3-tts-xvec-only",
+    },
+    "pocket": {
+        "--pocket-tts-voice",
+        "--pocket-tts-device",
+        "--pocket-tts-sample-rate",
+        "--pocket-tts-blocksize",
+        "--pocket-tts-max-tokens",
+    },
+    "kokoro": {
+        "--kokoro-model-name",
+        "--kokoro-voice",
+        "--kokoro-device",
+        "--kokoro-speed",
+        "--kokoro-lang-code",
+        "--kokoro-blocksize",
+    },
+    "chatterbox": {
+        "--chatterbox-model-variant",
+        "--chatterbox-device",
+        "--chatterbox-voice",
+        "--chatterbox-exaggeration",
+        "--chatterbox-cfg-weight",
+        "--chatterbox-temperature",
+        "--chatterbox-repetition-penalty",
+        "--chatterbox-min-p",
+        "--chatterbox-top-p",
+        "--chatterbox-top-k",
+        "--chatterbox-language-id",
+        "--chatterbox-voices-dir",
+        "--chatterbox-sample-rate",
+        "--chatterbox-blocksize",
+    },
+    "chatTTS": {
+        "--chat-tts-stream",
+        "--chat-tts-device",
+        "--chat-tts-chunk-size",
+    },
+    "facebookMMS": {
+        "--facebook-mms-model-name",
+        "--facebook-mms-device",
+        "--facebook-mms-torch-dtype",
+    },
+}
+
+
+def _backend_args_to_drop(settings: dict[str, Any]) -> set[str]:
+    """CLI flags that should NOT be forwarded given the user's current backend
+    selection. These belong to backends the user is NOT using and would crash
+    HfArgumentParser with "Some specified arguments are not used".
+
+    Local Ollama (chat-completions) and OpenAI cloud (responses-api or
+    chat-completions) DO NOT need the local LLM flags (--llm-device, --llm-gen-*,
+    etc.) -- those are only valid for the in-process transformers backend. We
+    strip them when --llm-backend is anything other than "transformers".
+    Same idea for TTS: only forward the TTS-specific flags for the TTS the
+    user actually picked.
+    """
+    drop: set[str] = set()
+    if settings.get("--llm-backend") != "transformers":
+        drop.update(_LOCAL_LLM_ONLY_ARGS)
+    tts_backend = settings.get("--tts")
+    for backend, args in _TTS_ONLY_ARGS.items():
+        if tts_backend != backend:
+            drop.update(args)
+    return drop
+
+
 def build_argv(settings: dict[str, Any]) -> list[str]:
     """Turn a settings dict (from ``web_ui_settings.json``) into ``sys.argv``.
 
@@ -498,8 +666,14 @@ def build_argv(settings: dict[str, Any]) -> list[str]:
     that by checking ``"value" in settings``).
     """
     argv: list[str] = ["-m", "speech_to_speech.s2s_pipeline"]
+    drop = _backend_args_to_drop(settings)
     for flag, value in settings.items():
         if flag in _NON_FORWARDED:
+            continue
+        if flag in drop:
+            # Belongs to a backend the user is NOT using. Forwarding these
+            # would crash HfArgumentParser with "Some specified arguments
+            # are not used".
             continue
         if not flag.startswith("--"):
             continue
@@ -515,6 +689,11 @@ def build_argv(settings: dict[str, Any]) -> list[str]:
             continue
         if isinstance(value, str) and value == "":
             # Otherwise treat "" as "not set" and skip.
+            continue
+        if isinstance(value, dict) and not value:
+            # Empty dict (e.g. --mlx-audio-whisper-gen-kwargs {}) isn't a
+            # valid argparse value, and the dataclass default is "no kwargs",
+            # which is the same as an empty mapping. Drop it.
             continue
         argv.extend([flag, str(value)])
     return argv

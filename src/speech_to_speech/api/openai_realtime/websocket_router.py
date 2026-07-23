@@ -29,7 +29,7 @@ from speech_to_speech.api.openai_realtime.transports import (
     WebSocketTransport,
     send_ws_event,
 )
-from speech_to_speech.pipeline.control import SESSION_END, PipelineControlMessage, is_control_message
+from speech_to_speech.pipeline.control import SESSION_END, UNLOAD_TTS, PipelineControlMessage, is_control_message
 from speech_to_speech.pipeline.events import (
     AssistantTextEvent,
     PartialTranscriptionEvent,
@@ -81,7 +81,9 @@ QItem = TypeVar("QItem")
 def _keep_audio_sentinel(item: Any) -> bool:
     # SESSION_END must survive barge-in flushes of output_queue: dropping it
     # would leave the release path waiting forever for the drain signal.
-    return _is_audio_done(item) or is_control_message(item, SESSION_END.kind)
+    # UNLOAD_TTS also needs to traverse the chain to reach the TTS handler,
+    # so it gets the same protection.
+    return _is_audio_done(item) or is_control_message(item, SESSION_END.kind) or is_control_message(item, UNLOAD_TTS.kind)
 
 
 def _keep_user_text_event(item: Any) -> bool:
@@ -699,6 +701,30 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
             await session.transport.close()
             return Response(status_code=200)
         return Response(content="Unknown call", status_code=404, media_type="text/plain")
+
+    @app.post("/v1/admin/unload_tts")
+    async def admin_unload_tts() -> dict[str, Any]:
+        """Drop the TTS model from RAM on every pipeline unit.
+
+        Broadcasts an ``UNLOAD_TTS`` control message into each unit's input
+        queue. The TTS handler's :meth:`on_unload` releases the model; the
+        model reloads transparently on the next TTS request (see
+        :meth:`ChatterboxTTSHandler._ensure_model_loaded`). The pipeline
+        itself stays running — VAD, STT, and LLM keep their state.
+        """
+        # Import locally so the dashboard-only install path doesn't pull
+        # the control-module chain at import time.
+        from speech_to_speech.pipeline.control import UNLOAD_TTS
+
+        affected = 0
+        for unit in pool:
+            try:
+                unit.input_queue.put(UNLOAD_TTS)
+                affected += 1
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to enqueue UNLOAD_TTS on unit %s", unit.index)
+        logger.info("Admin UNLOAD_TTS broadcast: affected %d/%d units", affected, len(pool))
+        return {"ok": True, "affected": affected, "total": len(pool)}
 
     async def _send_loop_for(unit: PipelineUnit) -> None:
         """Per-pipeline send loop. Polls this unit's output queues and forwards

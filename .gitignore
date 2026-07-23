@@ -231,4 +231,4 @@ cover/
 uv.lock
 
 # Web UI saved settings (created when the user clicks "Save Settings" in the dashboard)
-web_ui_settings.json
+web_ui_settings.jsonvoices/

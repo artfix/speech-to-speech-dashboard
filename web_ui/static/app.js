@@ -83,8 +83,17 @@ async function api(path, opts = {}) {
         ...opts,
     });
     if (!r.ok) {
-        const detail = await r.json().catch(() => ({ detail: r.statusText }));
-        throw new Error(detail.detail || r.statusText);
+        const body = await r.json().catch(() => ({ detail: r.statusText }));
+        // Preserve the structured detail (e.g. install_command for the
+        // chatterbox-not-installed 409) so callers can show a tailored UI
+        // instead of a generic "Start failed: [object Object]" toast.
+        const message = typeof body.detail === 'string'
+            ? body.detail
+            : (body.detail && body.detail.error) || body.detail || r.statusText;
+        const err = new Error(message);
+        err.status = r.status;
+        err.detail = body.detail;
+        throw err;
     }
     return r.json();
 }
@@ -131,6 +140,19 @@ function applyTheme(name) {
     state.settings.theme = name;
 }
 
+async function onThemeChange(name) {
+    applyTheme(name);
+    // Auto-persist so the choice survives reload / dashboard restart.
+    // Other fields are not touched -- the Settings tab still owns the
+    // explicit "Save Settings" flow.
+    try {
+        await postJSON('/api/settings/patch', { theme: name });
+        state.saved = true;
+    } catch (e) {
+        toast('Could not save theme: ' + e.message, 'error', 4000);
+    }
+}
+
 function buildThemeSelect() {
     const sel = $('#theme-select');
     sel.textContent = '';
@@ -139,7 +161,7 @@ function buildThemeSelect() {
         if (t === state.currentTheme) opt.selected = true;
         sel.appendChild(opt);
     }
-    sel.onchange = () => applyTheme(sel.value);
+    sel.onchange = () => onThemeChange(sel.value);
 }
 
 // ---- Sidebar + tabs --------------------------------------------------
@@ -203,6 +225,7 @@ function renderAll() {
             renderControlTab(tab);
         }
     }
+    applyDisabledStates();
 }
 
 function getGroup(id) {
@@ -230,6 +253,20 @@ function renderSettingsTab(tab, groupId) {
         }
         subEl.appendChild(subGrid);
         tab.appendChild(subEl);
+    }
+    // The voice library lives inside the TTS tab. It only renders when the
+    // user has selected the chatterbox backend, so it sits below the
+    // subgroup list and re-renders whenever the form is re-rendered or the
+    // voice library mutates.
+    if (groupId === 'tts') {
+        const mount = el('div', { id: 'voice-library-mount' });
+        tab.appendChild(mount);
+        renderVoiceLibrary(mount, state.settings, () => {
+            // onChange callback: when the user clicks "Set active" on a
+            // voice card, mirror the new name into --chatterbox-voice on
+            // the form so it gets saved with the rest of the settings.
+            renderAll();
+        });
     }
     updateSubgroupVisibility();
 }
@@ -259,7 +296,10 @@ function renderField(f, parentTitle) {
                 type: 'checkbox',
                 id: fieldId,
                 checked: val === true,
-                onchange: (e) => state.settings[f.flag] = e.target.checked,
+                onchange: (e) => {
+                    state.settings[f.flag] = e.target.checked;
+                    applyDisabledStates();
+                },
             }),
             el('span', { class: 'text-dim' }, 'enable'),
         ]);
@@ -272,6 +312,7 @@ function renderField(f, parentTitle) {
                 if (['--stt', '--llm-backend', '--tts'].includes(f.flag)) {
                     updateSubgroupVisibility();
                 }
+                applyDisabledStates();
             }
         });
         // Add a blank option for Optional / None
@@ -288,7 +329,10 @@ function renderField(f, parentTitle) {
         input = el('textarea', {
             class: 'field-textarea',
             id: fieldId,
-            oninput: (e) => state.settings[f.flag] = e.target.value,
+            oninput: (e) => {
+                state.settings[f.flag] = e.target.value;
+                applyDisabledStates();
+            },
         });
         input.value = val == null ? '' : String(val);
     } else {  // text or number
@@ -304,6 +348,7 @@ function renderField(f, parentTitle) {
                 } else {
                     state.settings[f.flag] = v;
                 }
+                applyDisabledStates();
             }
         });
         input.value = val == null ? '' : String(val);
@@ -327,6 +372,27 @@ function updateSubgroupVisibility() {
             const show = sel === sub.visible_when.equals;
             const el = $(`[data-subgroup="${sub.id}"]`);
             if (el) el.style.display = show ? '' : 'none';
+        }
+    }
+}
+
+// Apply the `disabled_when` rules attached to chatterbox TTS fields. Each
+// rule has the shape { field, in: [<values>] } and means "gray out this
+// field's input when <field>'s current value is one of <in>". The form
+// values are read from `state.settings`. We do not re-render the form on
+// every change; we just toggle the `.field-disabled` class on each field's
+// wrapper, which CSS uses to lower opacity and disable the input.
+function applyDisabledStates() {
+    for (const group of state.schema.groups) {
+        for (const f of [...(group.fields || []), ...((group.subgroups || []).flatMap(s => s.fields || []))]) {
+            if (!f.disabled_when) continue;
+            const watched = state.settings[f.disabled_when.field];
+            const shouldDisable = (f.disabled_when.in || []).includes(watched);
+            const wrap = $(`#f-${f.flag}`)?.closest('.field');
+            if (!wrap) continue;
+            wrap.classList.toggle('field-disabled', shouldDisable);
+            const input = wrap.querySelector('input, select, textarea');
+            if (input) input.disabled = shouldDisable;
         }
     }
 }
@@ -820,6 +886,13 @@ function renderControlTab(tab) {
     ]);
     tab.appendChild(row1);
 
+    tab.appendChild(el('h3', { style: { marginTop: '32px' } }, 'Memory'));
+    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '12px', maxWidth: '720px' } }, 'The pipeline keeps the TTS model in RAM while running. Use this to drop the TTS model from memory without killing the pipeline; the model reloads on the next TTS request (~20s on CPU, ~5s on GPU).'));
+    const rowMem = el('div', { class: 'btn-row' }, [
+        el('button', { class: 'btn btn-large', onclick: unloadTtsModel }, '🧹 Unload TTS Model'),
+    ]);
+    tab.appendChild(rowMem);
+
     tab.appendChild(el('h3', { style: { marginTop: '32px' } }, 'Danger Zone'));
     tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '12px' } }, 'Stops the pipeline AND closes the dashboard web server. You will need to re-run start_web_ui.sh to come back.'));
 
@@ -835,7 +908,35 @@ async function startPipeline() {
         toast('Pipeline started.', 'success');
         pollStatus();
     } catch (e) {
+        if (e.status === 409 && e.detail && e.detail.error === 'chatterbox_not_installed') {
+            showChatterboxInstallModal(e.detail);
+            return;
+        }
         toast('Start failed: ' + e.message, 'error', 6000);
+    }
+}
+
+function showChatterboxInstallModal(detail) {
+    const cmd = detail.install_command || '(no command available)';
+    const plat = detail.platform || '';
+    const body = el('div', {}, [
+        el('p', {}, `Chatterbox TTS is not installed. The pipeline can't start until it is.`),
+        el('p', { class: 'text-dim' }, `Detected platform: ${plat}. The install command below is tailored to that platform.`),
+        el('pre', { class: 'install-cmd' }, cmd),
+        el('p', { class: 'text-dim' }, 'Install logs will stream into the Status & Logs tab. This typically takes 1-3 minutes.'),
+    ]);
+    showModal('Install Chatterbox TTS', body, [
+        { label: 'Cancel', kind: '', onClick: () => {} },
+        { label: 'Run install', kind: 'btn-primary', onClick: runChatterboxInstall },
+    ]);
+}
+
+async function runChatterboxInstall() {
+    try {
+        await postJSON('/api/install/chatterbox', {});
+        toast('Install started. Watch the Status & Logs tab.', 'info', 6000);
+    } catch (e) {
+        toast('Install failed to start: ' + e.message, 'error', 6000);
     }
 }
 
@@ -856,6 +957,20 @@ async function stopPipeline() {
             } },
         ]
     );
+}
+
+async function unloadTtsModel() {
+    try {
+        const status = await getJSON('/api/process/status');
+        if (!status || !status.running) {
+            toast('Pipeline is not running — nothing to unload.', 'warning');
+            return;
+        }
+        const res = await postJSON('/api/process/unload_tts', {});
+        toast(`TTS model unloaded from ${res.affected}/${res.total} unit(s). Reloads on next reply.`, 'success');
+    } catch (e) {
+        toast('Unload failed: ' + e.message, 'error');
+    }
 }
 
 async function restartPipeline() {

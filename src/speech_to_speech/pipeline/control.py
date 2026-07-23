@@ -8,6 +8,7 @@ class ControlKind(str, Enum):
     """Strongly-typed kinds for :class:`PipelineControlMessage`."""
 
     SESSION_END = "session_end"
+    UNLOAD_TTS = "unload_tts"
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,10 @@ class PipelineControlMessage:
 
 
 SESSION_END = PipelineControlMessage(ControlKind.SESSION_END)
+# UNLOAD_TTS is broadcast (not session-scoped): the user clicks "Unload TTS
+# model" in the dashboard, and every pipeline unit drops its TTS model from
+# RAM. The model reloads on the next TTS request.
+UNLOAD_TTS = PipelineControlMessage(ControlKind.UNLOAD_TTS)
 
 
 def is_control_message(message: object, kind: ControlKind | None = None) -> bool:

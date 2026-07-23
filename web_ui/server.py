@@ -30,18 +30,26 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from web_ui import __version__ as _DASHBOARD_VERSION
 from web_ui.process_manager import LogLine, PipelineProcess
 from web_ui.settings_schema import get_defaults, get_full_schema
+from web_ui.voice_library import (
+    ChatterboxNotInstalled,
+    delete_voice,
+    list_voices,
+    save_voice,
+    synthesize_test,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,10 +187,276 @@ def api_post_settings(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "path": str(SETTINGS_PATH)}
 
 
+@app.post("/api/settings/patch")
+def api_patch_settings(body: dict[str, Any]) -> dict[str, Any]:
+    """Merge `body` into the saved settings file (creates it if missing).
+
+    Used for per-field auto-saves like the theme picker -- the frontend
+    doesn't need to know the rest of the file's contents. Only the keys in
+    `body` are touched; everything else on disk is preserved.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+    current = _read_settings() or {}
+    current.update(body)
+    _write_settings(current)
+    return {"ok": True, "path": str(SETTINGS_PATH), "settings": current}
+
+
 @app.post("/api/reset")
 def api_reset() -> dict[str, Any]:
     _delete_settings()
     return {"ok": True, "settings": get_defaults()}
+
+
+# ---- Voice library + Chatterbox install --------------------------------
+
+
+def _chatterbox_installed() -> bool:
+    """Best-effort probe for the optional chatterbox-tts package."""
+    try:
+        import chatterbox  # type: ignore[import-not-found]  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _platform_label() -> str:
+    if sys.platform.startswith("win"):
+        return "Windows"
+    return "Linux"
+
+
+def _chatterbox_install_command() -> str:
+    """Build the platform-aware install command shown in the install modal.
+
+    ``chatterbox-tts==0.1.7`` pins ``transformers==5.2.0`` and
+    ``torchaudio==2.6.0`` strictly, which would downgrade the rest of this
+    project on most platforms. We install ``chatterbox-tts`` with
+    ``--no-deps`` and then re-add the chatterbox-specific runtime deps
+    (s3tokenizer, conformer, diffusers, etc.) that the package expects but
+    pip cannot resolve alongside the project's other pins. The
+    ``transformers==5.2.0`` and ``torchaudio==2.6.0`` lines are intentionally
+    NOT included -- the project's existing pins (which work with the
+    chatterbox code in practice) take precedence.
+    """
+    return (
+        "uv pip install --no-deps chatterbox-tts==0.1.7 "
+        "s3tokenizer conformer==0.3.2 resemble-perth "
+        "diffusers omegaconf pykakasi pyloudnorm onnx"
+    )
+
+
+def _chatterbox_install_needed(settings: dict[str, Any]) -> Optional[str]:
+    """Return an install command string if the user picked chatterbox TTS but the
+    package isn't available, else ``None``.
+    """
+    if settings.get("--tts") != "chatterbox":
+        return None
+    if _chatterbox_installed():
+        return None
+    return _chatterbox_install_command()
+
+
+@app.get("/api/voices")
+def api_list_voices() -> dict[str, Any]:
+    return {"voices": [v.to_dict() for v in list_voices()]}
+
+
+@app.post("/api/voices/clone")
+async def api_clone_voice(
+    name: str = Form(...),
+    audio: UploadFile = File(...),
+    model_variant: str = Form("chatterbox-turbo"),
+) -> dict[str, Any]:
+    """Clone a voice from a reference audio uploaded by the browser.
+
+    Multipart fields: ``name`` (string), ``model_variant`` (string, optional,
+    defaults to ``chatterbox-turbo``), and ``audio`` (file, any audio format
+    that ``prepare_conditionals`` understands -- WAV is best).
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(status_code=400, detail="Field 'name' is required")
+    raw = await audio.read()
+    original = audio.filename or "reference.wav"
+    suffix = os.path.splitext(original)[1] or ".wav"
+    try:
+        entry = save_voice(
+            name=name,
+            audio_bytes=raw,
+            suffix=suffix,
+            model_variant=model_variant,
+        )
+    except ChatterboxNotInstalled as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "chatterbox_not_installed",
+                "install_command": _chatterbox_install_command(),
+                "platform": _platform_label(),
+            },
+        ) from e
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "voice": entry.to_dict()}
+
+
+@app.delete("/api/voices/{name}")
+def api_delete_voice(name: str) -> dict[str, Any]:
+    removed = delete_voice(name)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Voice {name!r} not found")
+    return {"ok": True, "name": name}
+
+
+@app.post("/api/voices/{name}/set-active")
+def api_set_active_voice(name: str) -> dict[str, Any]:
+    """Write the voice name into ``--chatterbox-voice`` in the settings file.
+
+    This is a thin convenience: the frontend can otherwise just edit the form
+    field and click Save, but a dedicated endpoint makes the
+    "Set active" button on a voice card a one-click action. We also flip
+    ``--tts`` to ``chatterbox`` if it isn't already, so the form and the
+    pipeline agree on which backend to use — without this, a user who clones
+    a voice while running qwen3 would have to remember to switch the dropdown
+    before saving or the chatterbox-voice flag would be silently dropped.
+    """
+    current = _read_settings() or {}
+    current["--chatterbox-voice"] = name
+    if current.get("--tts") != "chatterbox":
+        current["--tts"] = "chatterbox"
+    _write_settings(current)
+    return {"ok": True, "name": name, "settings": current}
+
+
+@app.post("/api/voices/test")
+def api_voice_test(body: dict[str, Any]) -> Response:
+    """Synthesize a short preview for a voice and return raw WAV bytes.
+
+    The body shape matches the chatterbox settings (the preview uses the
+    current form values so the user hears exactly the voice their robot will
+    produce). Returns ``audio/wav``.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+    voice = body.get("voice")
+    text = body.get("text") or "Hello, this is a test of my cloned voice."
+    model_variant = body.get("model_variant") or "chatterbox-turbo"
+    if not isinstance(voice, str) or not voice:
+        raise HTTPException(status_code=400, detail="Field 'voice' is required")
+    # Pull the rest of the chatterbox params straight from the body so the
+    # preview matches whatever the user has set on the form.
+    param_keys = (
+        "exaggeration",
+        "cfg_weight",
+        "temperature",
+        "repetition_penalty",
+        "min_p",
+        "top_p",
+        "top_k",
+        "language_id",
+    )
+    params = {k: body[k] for k in param_keys if k in body and body[k] is not None}
+    try:
+        wav_bytes = synthesize_test(
+            voice=voice,
+            text=text,
+            model_variant=model_variant,
+            **params,
+        )
+    except ChatterboxNotInstalled as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "chatterbox_not_installed",
+                "install_command": _chatterbox_install_command(),
+                "platform": _platform_label(),
+            },
+        ) from e
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
+# Background-thread install. The frontend kicks this off and watches
+# ``/ws/logs`` for the streamed output. The thread pushes each pip output
+# line into the dashboard's log fanout (mirroring what ``process_manager``
+# does for the pipeline subprocess).
+_INSTALL_LOCK = threading.Lock()
+_INSTALL_RUNNING = {"value": False}
+
+
+@app.post("/api/install/chatterbox")
+def api_install_chatterbox() -> dict[str, Any]:
+    """Run the chatterbox install command in a background thread.
+
+    Returns ``{"ok": True, "started": True}`` immediately. Install logs are
+    pushed into the same websocket stream the user watches for the pipeline.
+    The frontend watches the log for a "Successfully installed chatterbox-tts"
+    marker (or the failure equivalent) to know when to close the install
+    modal.
+    """
+    with _INSTALL_LOCK:
+        if _INSTALL_RUNNING["value"]:
+            raise HTTPException(status_code=409, detail="Install already in progress")
+        _INSTALL_RUNNING["value"] = True
+
+    def _publish(line: str, level: str = "info") -> None:
+        """Push a log line to the same fanout the pipeline uses."""
+        from web_ui.process_manager import LogLine
+
+        loop = state._loop
+        if loop is None:
+            return
+        try:
+            log = LogLine(text=line, level=level, ts=time.time())
+            asyncio.run_coroutine_threadsafe(
+                state._send_to_all(log.to_dict()), loop
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to publish install log line", exc_info=True)
+
+    def _runner() -> None:
+        try:
+            cmd = _chatterbox_install_command()
+            _publish("[install] $ " + cmd)
+            # Stream stdout+stderr line-by-line. ``text=True`` so we don't
+            # have to decode bytes; ``bufsize=1`` so the lines come in
+            # promptly.
+            import subprocess
+
+            proc = subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                _publish("[install] " + line.rstrip())
+            rc = proc.wait()
+            if rc == 0:
+                _publish(
+                    "[install] Done. chatterbox-tts is now installed (v0.1.7).",
+                    level="info",
+                )
+            else:
+                _publish(
+                    f"[install] Failed with exit code {rc}. See the log above for details.",
+                    level="error",
+                )
+        except Exception as e:  # noqa: BLE001
+            _publish(f"[install] Crashed: {e}", level="error")
+            logger.exception("Chatterbox install runner crashed")
+        finally:
+            with _INSTALL_LOCK:
+                _INSTALL_RUNNING["value"] = False
+
+    threading.Thread(target=_runner, daemon=True, name="chatterbox-install").start()
+    return {"ok": True, "started": True, "command": _chatterbox_install_command()}
 
 
 # ---- Process control -------------------------------------------------------
@@ -193,6 +467,16 @@ def api_process_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = (body or {}).get("settings")
     if not isinstance(settings, dict):
         raise HTTPException(status_code=400, detail="Body must include 'settings' object")
+    install_cmd = _chatterbox_install_needed(settings)
+    if install_cmd:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "chatterbox_not_installed",
+                "install_command": install_cmd,
+                "platform": _platform_label(),
+            },
+        )
     try:
         state.process.start(settings)
     except RuntimeError as e:
@@ -218,6 +502,43 @@ def api_process_restart(body: dict[str, Any] | None = None) -> dict[str, Any]:
 @app.get("/api/process/status")
 def api_process_status() -> dict[str, Any]:
     return state.process.get_status()
+
+
+@app.post("/api/process/unload_tts")
+async def api_process_unload_tts() -> dict[str, Any]:
+    """Drop the TTS model from RAM on every pipeline unit.
+
+    Proxies the request to the pipeline's ``POST /v1/admin/unload_tts``,
+    which broadcasts an ``UNLOAD_TTS`` control message into each unit's
+    input queue. The TTS handler's ``on_unload`` releases the model; the
+    model reloads transparently on the next TTS request.
+    """
+    import httpx
+
+    status = state.process.get_status()
+    if not status["running"]:
+        raise HTTPException(status_code=409, detail="Pipeline is not running")
+
+    argv = status["argv"]
+    ws_port = 8765  # default
+    if "--ws-port" in argv:
+        i = argv.index("--ws-port")
+        if i + 1 < len(argv):
+            try:
+                ws_port = int(argv[i + 1])
+            except ValueError:
+                pass
+
+    url = f"http://127.0.0.1:{ws_port}/v1/admin/unload_tts"
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.post(url)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not reach pipeline at {url}: {e}") from e
+
+    if r.status_code == 200:
+        return r.json()
+    raise HTTPException(status_code=r.status_code, detail=r.text)
 
 
 # ---- Logs ------------------------------------------------------------------

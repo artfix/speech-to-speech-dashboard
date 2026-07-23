@@ -10,7 +10,7 @@ from typing import Any, Generic, Iterator, TypeVar, cast
 
 import numpy as np
 
-from speech_to_speech.pipeline.control import PipelineControlMessage, is_control_message, SESSION_END
+from speech_to_speech.pipeline.control import PipelineControlMessage, is_control_message, SESSION_END, UNLOAD_TTS
 from speech_to_speech.pipeline.log_context import pipeline_log_ctx
 from speech_to_speech.pipeline.messages import PIPELINE_END, AudioOutput, EndOfResponse
 
@@ -104,6 +104,22 @@ class BaseHandler(Generic[InT, OutT]):
                 self.queue_out.put(item)
                 continue
 
+            if isinstance(item, PipelineControlMessage) and is_control_message(item, UNLOAD_TTS.kind):
+                logger.info("%s: unload-tts received", self.__class__.__name__)
+                try:
+                    self.on_unload()
+                except Exception as e:
+                    logger.error(
+                        f"{self.__class__.__name__}: Error in on_unload(): {type(e).__name__}: {e}",
+                        exc_info=True,
+                    )
+                # Forward down the chain so the TTS handler (the one that
+                # actually holds the model) gets a chance to act on it. Every
+                # non-TTS handler's on_unload is a no-op, so the cost of
+                # re-visiting each one is negligible.
+                self.queue_out.put(item)
+                continue
+
             if isinstance(item, bytes) and item == PIPELINE_END:
                 # sentinel signal to avoid queue deadlock
                 logger.debug("Stopping thread")
@@ -158,4 +174,14 @@ class BaseHandler(Generic[InT, OutT]):
         pass
 
     def on_session_end(self) -> None:
+        pass
+
+    def on_unload(self) -> None:
+        """Drop heavy model state from RAM (e.g. on an ``UNLOAD_TTS`` control).
+
+        Default is a no-op. Handlers that hold GPU/CPU models (TTS, STT) should
+        override this to ``del self.model`` + ``gc.collect()``. The model will
+        be reloaded transparently on the next call to :meth:`process` (see the
+        chatterbox TTS handler for the pattern).
+        """
         pass

@@ -72,6 +72,24 @@ facebook-mms = [
 faster-whisper = [
     "faster-whisper>=1.0.3",
 ]
+chatterbox = [
+    # chatterbox-tts==0.1.7 pins transformers==5.2.0 and torchaudio==2.6.0 strictly,
+    # which conflicts with the rest of this project (transformers>=4.57.0, torchaudio
+    # varies by platform). We use --no-deps and pull the small companion packages that
+    # chatterbox-tts actually needs at runtime. The dashboard's install endpoint runs
+    # the same `uv pip install --no-deps ...` command for users who want the one-click
+    # install experience; the static marker here keeps `uv sync --extra chatterbox`
+    # working for users who want everything in one shot.
+    "chatterbox-tts==0.1.7",
+    "s3tokenizer",
+    "conformer==0.3.2",
+    "resemble-perth",
+    "diffusers",
+    "omegaconf",
+    "pykakasi",
+    "pyloudnorm",
+    "onnx",
+]
 kokoro = [
     "kokoro>=0.9.2; platform_system != 'Darwin'",
 ]

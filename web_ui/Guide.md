@@ -140,6 +140,34 @@ Silero VAD v5 detects when the user is speaking and when they're silent. The pip
 | `pocket` | CPU, voice cloning with preset voices. |
 | `chatTTS` | English/Chinese, expressive. |
 | `facebookMMS` | Multilingual via MMS checkpoints. |
+| `chatterbox` | Voice cloning from a short reference audio. English (`chatterbox`), Turbo (`chatterbox-turbo`), Nano (`chatterbox-nano`), and Multilingual (`chatterbox-multilingual`) variants. CPU works. |
+
+The Qwen3-TTS backend needs a specific `qwentts-cpp-python` wheel matching your CUDA runtime on Linux. If you see import errors, see "Common issues" below.
+
+## Voice library (Chatterbox)
+
+The `chatterbox` TTS is a *voice cloning* model: you upload a short reference audio (5-30 seconds of clean speech, WAV preferred), name the voice, and the robot will speak in that voice for every reply. The cloned voice is stored as a small `.pt` file in `voices/<name>.pt` at the repo root.
+
+**In the dashboard, when `--tts chatterbox` is selected:**
+
+1. Scroll down to the **Voice Library** section in the **TTS** tab.
+2. Click **+ Clone new voice**, pick a WAV file from your disk, type a name (letters, digits, `_` and `-` only; up to 64 chars), pick the chatterbox model variant, submit.
+3. The new card appears in the grid. The reference audio is **discarded** after cloning — only the speaker embedding is stored.
+4. Click **Set active** on the card to wire it into `--chatterbox-voice`. Click **Test** to synthesize a short preview using your current parameter values; if you don't like how it sounds, tweak the parameters in the form above and click **Test** again.
+5. **Save Settings** then start the pipeline — the robot speaks in your cloned voice.
+
+You can clone as many voices as you like; switch between them with **Set active** or by typing the name directly into `--chatterbox-voice` in the form. Use **×** on a card to delete a voice (the `.pt` and the manifest entry are both removed; if it was the active one, `--chatterbox-voice` reverts to empty).
+
+### Chatterbox model variants
+
+| Variant | Size | Notes |
+|---|---|---|
+| `chatterbox` (English 500M) | ~1 GB | Best quality, slowest. `exaggeration`, `cfg_weight`, `repetition_penalty`, `min_p` all apply. |
+| `chatterbox-turbo` (350M) | ~700 MB | Single-step decoder, low latency. `exaggeration`/`cfg_weight` are no-ops (logged as ignored). |
+| `chatterbox-nano` (110M) | ~250 MB | Smallest, fastest. CPU-friendly. Same restrictions as Turbo. |
+| `chatterbox-multilingual` | ~1 GB | Adds `language_id` (en, fr, de, es, it, pt, ja, zh, ko, hi, ar). Slower than English. |
+
+Variant-conditional parameters are **grayed out** in the form when they don't apply — they're not errors, just no-ops on that variant.
 
 The Qwen3-TTS backend needs a specific `qwentts-cpp-python` wheel matching your CUDA runtime on Linux. If you see import errors, see "Common issues" below.
 
@@ -203,6 +231,28 @@ uv pip install "speech-to-speech[kokoro]"
 
 Same pattern for `pocket`, `chattts`, `facebook-mms`, `faster-whisper`, `paraformer`, `whisper-mlx`.
 
+## Chatterbox TTS: install / runtime issues
+
+**Install.** The `chatterbox` extra pulls in the Chatterbox TTS package plus the few odd small deps it needs (s3tokenizer, conformer, resemble-perth, diffusers, omegaconf, pykakasi, pyloudnorm). The dashboard's "Install chatterbox" modal runs the exact same command — if you want to do it manually:
+
+```bash
+uv pip install --no-deps chatterbox-tts==0.1.7 \
+  s3tokenizer conformer==0.3.2 resemble-perth \
+  diffusers omegaconf pykakasi pyloudnorm
+```
+
+(We pass `--no-deps` for `chatterbox-tts` itself because its strict pin on `transformers==5.2.0` conflicts with the rest of the project's pins. The packages listed after it are Chatterbox's actual runtime deps.)
+
+**First-run downloads.** On the very first pipeline start with `--tts chatterbox`, the model weights download from Hugging Face into the standard cache (`~/.cache/huggingface/...`). ~700 MB for Turbo, ~1 GB for the English variant, ~250 MB for Nano. Subsequent starts are fast.
+
+**"RuntimeError: expected scalar type Double but found Float".** This is a chatterbox-tts 0.1.7 dtype bug. The dashboard and the pipeline handler both patch the s3tokenizer and voice_encoder mel-spectrogram functions at import time to force float32 — so if you see this error, the patch didn't run. Make sure you import via the dashboard (or `from speech_to_speech.TTS.chatterbox_tts_handler import _patch_chatterbox_mel_spectrogram; _patch_chatterbox_mel_spectrogram()` before any other chatterbox import).
+
+**Cloned voice doesn't sound like the reference.** Two common causes:
+- **Reference audio too short.** Chatterbox needs at least ~5 seconds of clean speech to extract a usable embedding. 10-30 seconds is the sweet spot.
+- **Reference audio noisy / music / multiple speakers.** Chatterbox can latch onto background music or the wrong speaker. Use a clean recording of just the target voice.
+
+**Turbo / Nano variant — `exaggeration` and `cfg_weight` are grayed out.** These are no-ops on the Turbo decoder (the dashboard shows the warning "ignored by Turbo" in the chatterbox logs). The values you set are still saved, but they don't affect output. If you need `exaggeration` / `cfg_weight`, switch the variant dropdown to `chatterbox` (English 500M) or `chatterbox-multilingual`.
+
 ## Audio device not found (`local` mode)
 
 `sounddevice` (used in `local` mode) needs a working audio system. On Linux you may need `libportaudio2` (`sudo apt install libportaudio2`). On a headless server, use `--mode websocket` or `--mode socket` instead.
@@ -222,6 +272,14 @@ Open the **Status & Logs** tab and look at the error. Common causes:
 - API key missing in the environment (use Settings → Environment Variables, then Save and Restart).
 
 The **Toggle Verbose** button on the Status tab restarts the pipeline with `--log-level debug`, which surfaces everything including import errors and download progress.
+
+## "I'm running out of RAM" / "Unload the TTS model"
+
+The pipeline keeps the TTS model loaded in RAM while running. Chatterbox Turbo is ~700 MB, the full English variant is ~1 GB, parakeet is another ~600 MB — the Python interpreter baseline adds ~300 MB, so a full chatterbox pipeline sits at 1.5-2 GB before any of the LLM-related caches.
+
+To free RAM **without stopping the pipeline** (so the VAD, STT, and LLM stay warm), open the **Control** tab and click **🧹 Unload TTS Model**. The TTS handler drops the model in place and runs `gc.collect()`. The next TTS request reloads the model — ~15-20s on CPU, ~5s on CUDA. The robot will pause for that long on the very first reply after unloading, then behave normally.
+
+If you want to free **everything**, click **■ Stop Pipeline**. The subprocess exits and the OS reclaims all of it. Click **▶ Start Pipeline** to start over (model load is again ~15-20s on CPU).
 
 ## Where are my settings saved?
 

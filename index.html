@@ -1,19 +1,419 @@
-<!doctype html>
-<html>
-	<head>
-		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width" />
-		<title>My static Space</title>
-		<link rel="stylesheet" href="style.css" />
-	</head>
-	<body>
-		<div class="card">
-			<h1>Welcome to your static Space!</h1>
-			<p>You can modify this app directly by editing <i>index.html</i> in the Files and versions tab.</p>
-			<p>
-				Also don't forget to check the
-				<a href="https://huggingface.co/docs/hub/spaces" target="_blank">Spaces documentation</a>.
-			</p>
-		</div>
-	</body>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>speech-to-speech · Reachy Mini conversation backend</title>
+<style>
+    :root {
+        --bg: #0a0e14;
+        --bg-elev: #11161f;
+        --bg-card: #161c27;
+        --border: #1f2733;
+        --text: #d6deeb;
+        --text-dim: #8b9bb4;
+        --accent: #00f0ff;
+        --accent-2: #ff79c6;
+        --success: #50fa7b;
+        --warning: #f1fa8c;
+        --error: #ff5555;
+        --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
+        --font-mono: "JetBrains Mono", "Fira Code", "Menlo", "Consolas", monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+        margin: 0; padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        line-height: 1.6;
+        min-height: 100vh;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+    code {
+        background: var(--bg-elev);
+        padding: 1px 6px;
+        border-radius: 4px;
+        color: var(--accent);
+    }
+    .container {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 32px 24px 80px;
+    }
+    .hero {
+        text-align: center;
+        padding: 48px 0 32px;
+    }
+    .hero h1 {
+        font-size: 3.4rem;
+        font-weight: 800;
+        margin: 0 0 8px;
+        letter-spacing: -0.02em;
+        background: linear-gradient(120deg, var(--accent), var(--accent-2));
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .hero .tagline {
+        font-size: 1.25rem;
+        color: var(--text-dim);
+        margin: 0 0 24px;
+    }
+    .badges {
+        display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+        margin-bottom: 32px;
+    }
+    .badge {
+        display: inline-block;
+        padding: 4px 10px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 12px;
+        color: var(--text-dim);
+    }
+    .badge.green { color: var(--success); border-color: var(--success); }
+    .badge.cyan { color: var(--accent); border-color: var(--accent); }
+    .badge.pink { color: var(--accent-2); border-color: var(--accent-2); }
+    .cta-row {
+        display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+    }
+    .btn {
+        display: inline-block;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 0.95rem;
+        cursor: pointer;
+        transition: transform 0.1s ease, box-shadow 0.2s ease;
+        text-decoration: none;
+    }
+    .btn:hover { transform: translateY(-1px); text-decoration: none; }
+    .btn-primary {
+        background: var(--accent);
+        color: var(--bg);
+        box-shadow: 0 4px 20px rgba(0, 240, 255, 0.3);
+    }
+    .btn-secondary {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+    h2 {
+        font-size: 1.8rem;
+        margin: 56px 0 16px;
+        color: var(--accent);
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+    }
+    h3 {
+        font-size: 1.25rem;
+        margin: 24px 0 8px;
+        color: var(--text);
+    }
+    p { color: var(--text); }
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+        margin: 16px 0 24px;
+    }
+    .card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 20px;
+        transition: border-color 0.2s ease, transform 0.2s ease;
+    }
+    .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .card h4 {
+        margin: 0 0 8px;
+        color: var(--accent);
+        font-size: 1rem;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .card p { margin: 0; color: var(--text-dim); font-size: 0.95rem; }
+    .pipe {
+        display: flex;
+        align-items: stretch;
+        gap: 4px;
+        margin: 32px 0;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+    .pipe-step {
+        flex: 1 1 160px;
+        max-width: 200px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px 12px;
+        text-align: center;
+        position: relative;
+    }
+    .pipe-step .tag {
+        display: inline-block;
+        background: var(--accent);
+        color: var(--bg);
+        padding: 2px 10px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        margin-bottom: 8px;
+    }
+    .pipe-step .job {
+        font-size: 0.9rem;
+        color: var(--text);
+        margin-bottom: 4px;
+    }
+    .pipe-step .model {
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: var(--text-dim);
+        word-break: break-all;
+    }
+    .pipe-arrow {
+        align-self: center;
+        color: var(--text-dim);
+        font-size: 1.4rem;
+        user-select: none;
+    }
+    .feature-block {
+        background: linear-gradient(135deg, var(--bg-card), var(--bg-elev));
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 28px;
+        margin: 24px 0;
+    }
+    .feature-block.new {
+        border-color: var(--accent);
+        position: relative;
+    }
+    .feature-block.new::before {
+        content: "NEW in v0.2.0";
+        position: absolute;
+        top: -10px; left: 24px;
+        background: var(--accent);
+        color: var(--bg);
+        padding: 2px 12px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+    }
+    .feature-block h3 { margin-top: 0; color: var(--accent-2); }
+    pre {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+        overflow-x: auto;
+        font-size: 0.85rem;
+        line-height: 1.5;
+    }
+    pre code { background: transparent; padding: 0; color: var(--text); }
+    .tabs {
+        display: flex; gap: 4px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 16px;
+    }
+    .tab {
+        padding: 8px 16px;
+        background: transparent;
+        color: var(--text-dim);
+        border: none;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        font-size: 0.9rem;
+    }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 16px 0;
+    }
+    th, td {
+        text-align: left;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--text-dim); font-weight: 600; font-size: 0.85rem; }
+    td { color: var(--text); font-size: 0.9rem; }
+    tr:hover td { background: var(--bg-elev); }
+    footer {
+        margin-top: 80px;
+        padding-top: 24px;
+        border-top: 1px solid var(--border);
+        text-align: center;
+        color: var(--text-dim);
+        font-size: 0.85rem;
+    }
+    footer a { color: var(--text-dim); }
+    footer a:hover { color: var(--accent); }
+    .links { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="container">
+
+    <section class="hero">
+        <h1>speech-to-speech</h1>
+        <p class="tagline">An open, real-time voice agent pipeline with a browser dashboard.<br>Now with Chatterbox voice cloning and 18 cyberpunk themes.</p>
+        <div class="badges">
+            <span class="badge green">v0.2.0</span>
+            <span class="badge cyan">VAD → STT → LLM → TTS</span>
+            <span class="badge pink">Realtime WebSocket</span>
+            <span class="badge">6 TTS backends</span>
+            <span class="badge">Linux / Windows</span>
+        </div>
+        <div class="cta-row">
+            <a class="btn btn-primary" href="./web_ui/">🚀 Open Dashboard</a>
+            <a class="btn btn-secondary" href="./demo/">🎙️ Open Conversation Demo</a>
+            <a class="btn btn-secondary" href="https://github.com/huggingface/speech-to-speech">📦 GitHub</a>
+        </div>
+    </section>
+
+    <h2>The pipeline</h2>
+    <p style="color: var(--text-dim);">Every stage is swappable. Each one runs in its own thread, connected by queues, and the whole thing speaks the OpenAI Realtime GA protocol on <code>ws://&lt;host&gt;:8765/v1/realtime</code>.</p>
+    <div class="pipe">
+        <div class="pipe-step">
+            <span class="tag">VAD</span>
+            <div class="job">detects speech</div>
+            <div class="model">silero-vad v5</div>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-step">
+            <span class="tag">STT</span>
+            <div class="job">transcribes</div>
+            <div class="model">parakeet-tdt<br>whisper · faster-whisper<br>mlx-whisper · paraformer</div>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-step">
+            <span class="tag">LLM</span>
+            <div class="job">thinks</div>
+            <div class="model">local transformers<br>mlx-lm<br>Ollama · vLLM<br>OpenAI · HF Inference</div>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-step">
+            <span class="tag">TTS</span>
+            <div class="job">speaks it back</div>
+            <div class="model">qwen3 · pocket · kokoro<br>chatTTS · facebookMMS<br><strong style="color: var(--accent-2);">chatterbox</strong></div>
+        </div>
+    </div>
+
+    <h2>Browser dashboard</h2>
+    <p>A FastAPI + vanilla-JS web app that introspects every CLI flag the pipeline knows about and renders a form for each one. No build step. No per-flag hardcoding.</p>
+    <div class="grid">
+        <div class="card">
+            <h4>🎚️ Tabs for everything</h4>
+            <p>Mode, VAD, STT, LLM, TTS, Advanced, Status &amp; Logs, Guide, Settings, Control — every backend has its own sub-form that swaps in when you pick it.</p>
+        </div>
+        <div class="card">
+            <h4>📡 Realtime pool status</h4>
+            <p>Live <code>/v1/pool</code> polling on the Status tab — see which pipeline units are idle, busy, and which session is on each.</p>
+        </div>
+        <div class="card">
+            <h4>📜 Live log tail</h4>
+            <p>Filter by level, toggle verbose (<code>--log-level debug</code>), watch the pipeline come up in real time.</p>
+        </div>
+        <div class="card">
+            <h4>🎨 18 cyberpunk themes</h4>
+            <p>Cyberpunk Neon (default), Matrix, Synthwave, Blade Runner, Tron, Vaporwave, Hacker Terminal, Dark Glass — drop a new <code>.css</code> in <code>web_ui/themes/</code> and it appears in the picker.</p>
+        </div>
+        <div class="card">
+            <h4>💾 Save / Reset / Import / Export</h4>
+            <p>Settings live at <code>web_ui_settings.json</code> in the repo root (gitignored). Atomic write — a crash mid-save can't corrupt the file.</p>
+        </div>
+        <div class="card">
+            <h4>🚀 Start / Stop / Restart / Shutdown</h4>
+            <p>One click to start, one click to kill. Shutdown closes both the pipeline and the dashboard. Cross-platform: <code>CREATE_NEW_PROCESS_GROUP</code> on Windows, <code>SIGTERM</code>+<code>SIGKILL</code> on Linux.</p>
+        </div>
+    </div>
+
+    <h2>What's new in v0.2.0</h2>
+
+    <div class="feature-block new">
+        <h3>🎤 Chatterbox TTS — voice cloning from a 5-second sample</h3>
+        <p>Resemble AI's Chatterbox, the sixth TTS backend. Upload a short reference audio (5–30s of clean speech), the dashboard extracts the speaker embedding, and the robot speaks in that voice for every reply. Three variants:</p>
+        <table>
+            <tr>
+                <th>Variant</th>
+                <th>Size</th>
+                <th>Notes</th>
+            </tr>
+            <tr><td><code>chatterbox</code> (English 500M)</td><td>~1 GB</td><td>Best quality. <code>exaggeration</code>, <code>cfg_weight</code>, <code>repetition_penalty</code>, <code>min_p</code> all apply.</td></tr>
+            <tr><td><code>chatterbox-turbo</code> (350M)</td><td>~700 MB</td><td>Single-step decoder, low latency. <code>exaggeration</code> and <code>cfg_weight</code> are no-ops (grayed in the form).</td></tr>
+            <tr><td><code>chatterbox-nano</code> (110M)</td><td>~250 MB</td><td>CPU-friendly. Same restrictions as Turbo.</td></tr>
+        </table>
+        <p style="color: var(--text-dim); font-size: 0.9rem;">The dashboard's Voice Library shows all your cloned voices as cards. Set active, test with the current form settings, or delete. Variant-conditional params are visually disabled, not removed.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>🧹 Hot-unload the TTS model</h3>
+        <p>Chatterbox Turbo holds ~700 MB of RAM; the full English variant is ~1 GB. If you're RAM-constrained, click <strong>Unload TTS Model</strong> on the Control tab — the model is dropped from RAM without killing the pipeline. The next TTS request reloads it transparently (~15–20s on CPU).</p>
+        <p style="color: var(--text-dim); font-size: 0.9rem;">Implemented as a <code>UNLOAD_TTS</code> control message that walks the entire handler chain (VAD → STT → … → TTS). Each non-TTS handler's <code>on_unload()</code> is a no-op; only the TTS handler actually drops the model.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>📥 One-click install from the dashboard</h3>
+        <p>Pick Chatterbox in the TTS tab and click Start — if the package isn't installed yet, the dashboard shows the exact <code>uv pip install</code> command for your platform and streams the install log into the Status tab. No terminal needed.</p>
+    </div>
+
+    <h2>Get started</h2>
+    <pre><code># Install (Chatterbox requires the optional extra)
+git clone https://github.com/huggingface/speech-to-speech.git
+cd speech-to-speech
+uv sync --extra chatterbox
+
+# Linux / macOS
+./start_web_ui.sh
+
+# Windows
+start_web_ui.bat</code></pre>
+    <p style="color: var(--text-dim);">The browser opens to <code>http://localhost:8050</code>. Set <code>SPEECH_TO_SPEECH_WEB_PORT</code> to change the port. See the <a href="./web_ui/Guide.md">in-app Guide</a> for Ollama recipes, OpenAI provider setup, and troubleshooting.</p>
+
+    <h2>Where everything lives</h2>
+    <table>
+        <tr><th>Path</th><th>What</th></tr>
+        <tr><td><code>web_ui/</code></td><td>The browser dashboard (FastAPI + vanilla JS, no build step)</td></tr>
+        <tr><td><code>web_ui/static/</code></td><td>HTML, CSS, theme files, voice-library UI module</td></tr>
+        <tr><td><code>web_ui/Guide.md</code></td><td>The in-app walkthrough (Quickstart, Ollama, common issues)</td></tr>
+        <tr><td><code>web_ui/voice_library.py</code></td><td>On-disk <code>voices/&lt;name&gt;.pt</code> library: list / clone / delete / test</td></tr>
+        <tr><td><code>demo/</code></td><td>The Reachy Mini conversation UI (orb, settings, tools, WebRTC)</td></tr>
+        <tr><td><code>src/speech_to_speech/TTS/</code></td><td>All six TTS backends, including the new <code>chatterbox_tts_handler.py</code></td></tr>
+        <tr><td><code>src/speech_to_speech/api/openai_realtime/</code></td><td>The Realtime WebSocket / WebRTC server</td></tr>
+        <tr><td><code>voices/</code></td><td>Cloned voice embeddings (gitignored, created on first clone)</td></tr>
+        <tr><td><code>web_ui_settings.json</code></td><td>Saved dashboard settings (gitignored, atomic write)</td></tr>
+    </table>
+
+    <h2>Try it with the Reachy Mini conversation app</h2>
+    <p>This fork powers the conversation backend for the <a href="https://huggingface.co/blog/reachy-mini" target="_blank" rel="noopener">Reachy Mini</a> robot. The conversation app in <code>demo/</code> talks to the same <code>ws://&lt;host&gt;:8765/v1/realtime</code> endpoint, so the moment your dashboard's pipeline is up, the robot can use your cloned Chatterbox voice.</p>
+    <pre><code># In one terminal: the dashboard + pipeline
+./start_web_ui.sh
+# Click "Start Pipeline" on the Control tab.
+
+# In another terminal: the conversation app
+uv run uvicorn --app-dir demo server:app --port 7860
+# Open http://localhost:7860/ and click the orb.</code></pre>
+
+    <footer>
+        <div class="links">
+            <a href="./web_ui/">Dashboard</a>
+            <span>·</span>
+            <a href="./demo/">Conversation App</a>
+            <span>·</span>
+            <a href="https://github.com/huggingface/speech-to-speech">GitHub</a>
+            <span>·</span>
+            <a href="https://huggingface.co/spaces/ArtFix0/speech-to-speech-dashboard">HF Space</a>
+        </div>
+        <p style="margin-top: 12px;">Apache 2.0 · built on <a href="https://github.com/huggingface/speech-to-speech">huggingface/speech-to-speech</a> · Chatterbox TTS by <a href="https://www.resemble.ai/">Resemble AI</a></p>
+    </footer>
+
+</div>
+</body>
 </html>
