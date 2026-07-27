@@ -309,17 +309,27 @@ html, body {
 
 .field-help {
     display: none;
-    font-size: 12px;
+    font-size: 12.5px;
+    line-height: 1.45;
     color: var(--text-dim);
     background: var(--bg-elev-2);
     border-left: 2px solid var(--accent);
-    padding: 8px 12px;
-    margin-top: 4px;
+    padding: 10px 14px;
+    margin-top: 6px;
     border-radius: 0 var(--radius) var(--radius) 0;
+    /* Multi-sentence help text (most of it is) wraps naturally instead of
+       collapsing internal whitespace into a single line. */
+    white-space: pre-wrap;
 }
 
 .field-help.visible {
     display: block;
+    animation: help-pop-in 140ms ease-out;
+}
+
+@keyframes help-pop-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
 /* Disabled-when: variant-conditional fields. Chatterbox TTS uses this to

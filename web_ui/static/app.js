@@ -369,16 +369,32 @@ function renderSettingsTab(tab, groupId) {
 
 function renderField(f, parentTitle) {
     const fieldId = `f-${f.flag}`;
+    // Build a short hover-tooltip preview from the full help text. Native
+    // ``title=`` tooltips don't reflow, so we trim to ~220 chars and add an
+    // ellipsis. Clicking the ``?`` still toggles the full inline help div.
+    const hoverPreview = f.help
+        ? (f.help.length > 220 ? f.help.slice(0, 217) + '…' : f.help)
+        : 'Show help';
+
     const label = el('label', { class: 'field-label', for: fieldId }, [
         f.flag,
         el('span', { class: 'field-flag' }, ''),
         el('button', {
             type: 'button',
             class: 'help-btn',
-            title: 'Show help',
+            title: hoverPreview,
+            // Scope the toggle to the button's own ``.field`` wrapper, not the
+            // whole document. The same flag name (e.g. ``--model-name``) lives
+            // in multiple subgroups (``responses-api``, ``chat-completions``,
+            // ``transformers``, ``mlx-lm``), which means duplicate IDs in the
+            // DOM. ``document.querySelector`` would always pick the first
+            // match — frequently a hidden subgroup — and the click would
+            // appear to do nothing. Looking up relative to the clicked button
+            // guarantees we toggle the help div the user can actually see.
             onclick: (e) => {
                 e.preventDefault();
-                const help = $(`#help-${f.flag}`);
+                const field = e.currentTarget.closest('.field');
+                const help = field && field.querySelector('.field-help');
                 if (help) help.classList.toggle('visible');
             }
         }, '?'),
