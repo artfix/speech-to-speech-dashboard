@@ -47,4 +47,9 @@ echo ""
     fi
 ) &
 
-exec uv run speech-to-speech-web
+# Stash the original launch command so the auto-restart hook after a
+# torch wheel swap can re-launch us with the same flags (NOT
+# `uv run` plain, which would re-`uv sync` and clobber the install).
+export SPEECH_TO_SPEECH_DASHBOARD_RESTART_CMD='exec uv run --no-sync speech-to-speech-web'
+
+exec uv run --no-sync speech-to-speech-web

@@ -336,6 +336,43 @@ html, body {
     pointer-events: none;
 }
 
+/* GPU compatibility badge: shown above the voice library in the TTS tab
+   when the user picked chatterbox + a GPU device. Indicates whether the
+   installed torch supports the GPU (and what will happen on Start). */
+.gpu-badge {
+    margin: 16px 0 4px 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: rgba(80, 80, 80, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.92em;
+}
+.gpu-badge-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.gpu-badge-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    font-weight: bold;
+    font-size: 0.9em;
+    flex-shrink: 0;
+}
+.gpu-badge-ok { background: #2da44e; color: #fff; }
+.gpu-badge-pending { background: #d29922; color: #fff; }
+.gpu-badge-warning { background: #d1242f; color: #fff; }
+.gpu-badge-info { background: #388bfd; color: #fff; }
+.gpu-badge-unknown { background: #6e7681; color: #fff; }
+.gpu-badge-text {
+    flex: 1;
+    line-height: 1.4;
+}
+
 /* Voice library: the card grid lives inside the TTS tab. Cards are
    flexible-width so they wrap nicely on different screens. */
 .voice-library-header {

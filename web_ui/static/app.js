@@ -209,6 +209,83 @@ function activateTab(id) {
 
 // ---- Form rendering --------------------------------------------------
 
+// Map a GPU compat report to a small badge shown above the voice library.
+// The badge is only visible when the user picked chatterbox + a GPU device;
+// for everything else it stays empty. There is no "run install" button:
+// the dashboard auto-installs the matching torch wheel when the user
+// clicks Start, so the badge only shows status, not actions.
+async function renderGpuBadge(container) {
+    container.textContent = '';
+    const tts = _settingValue("tts");
+    if (tts !== "chatterbox") {
+        container.style.display = "none";
+        return;
+    }
+    const device = (_settingValue("chatterbox_device") || "auto").toLowerCase();
+    if (device !== "cuda" && device !== "auto") {
+        container.style.display = "none";
+        return;
+    }
+    container.style.display = "block";
+
+    let report;
+    try {
+        const r = await fetch("/api/gpu/check");
+        report = await r.json();
+    } catch (e) {
+        container.appendChild(
+            el("div", { class: "gpu-badge-row" }, [
+                el("span", { class: "gpu-badge-icon gpu-badge-unknown" }, "?"),
+                el("span", { class: "gpu-badge-text" }, "GPU status unknown"),
+            ]),
+        );
+        return;
+    }
+
+    if (!report.has_gpu) {
+        container.appendChild(
+            el("div", { class: "gpu-badge-row" }, [
+                el("span", { class: "gpu-badge-icon gpu-badge-info" }, "i"),
+                el("span", { class: "gpu-badge-text" }, "No GPU detected — pipeline will run on CPU"),
+            ]),
+        );
+        return;
+    }
+
+    if (report.supported) {
+        container.appendChild(
+            el("div", { class: "gpu-badge-row" }, [
+                el("span", { class: "gpu-badge-icon gpu-badge-ok" }, "✓"),
+                el("span", { class: "gpu-badge-text" },
+                    `GPU ready: ${report.gpu_name} (CC ${report.gpu_cc})`),
+            ]),
+        );
+        return;
+    }
+
+    if (report.recommend_cpu) {
+        container.appendChild(
+            el("div", { class: "gpu-badge-row" }, [
+                el("span", { class: "gpu-badge-icon gpu-badge-warning" }, "!"),
+                el("span", { class: "gpu-badge-text" },
+                    `${report.gpu_name} (CC ${report.gpu_cc}) has no torch wheel — pipeline will run on CPU`),
+            ]),
+        );
+        return;
+    }
+
+    // Installed torch doesn't support this GPU. The dashboard auto-installs
+    // the matching wheel when the user clicks Start, so we just show a
+    // status pill. No "install" button — the dashboard handles it.
+    container.appendChild(
+        el("div", { class: "gpu-badge-row" }, [
+            el("span", { class: "gpu-badge-icon gpu-badge-pending" }, "…"),
+            el("span", { class: "gpu-badge-text" },
+                `Will install torch ${report.suggested_wheel.torch_version} (${report.suggested_wheel.cuda_tag}) for ${report.gpu_name} (CC ${report.gpu_cc}) when you click Start`),
+        ]),
+    );
+}
+
 function renderAll() {
     for (const t of TAB_DEFS) {
         const tab = $(`#tab-${t.id}`);
@@ -259,14 +336,33 @@ function renderSettingsTab(tab, groupId) {
     // subgroup list and re-renders whenever the form is re-rendered or the
     // voice library mutates.
     if (groupId === 'tts') {
+        // GPU status badge: shows compatibility for the user's selected
+        // chatterbox device. Hidden when the user picked a non-GPU TTS.
+        const gpuBadge = el('div', { id: 'gpu-status-badge', class: 'gpu-badge' });
+        tab.appendChild(gpuBadge);
+        const refreshGpuBadge = () => renderGpuBadge(gpuBadge);
+        refreshGpuBadge();
+        // Re-check when the chatterbox device changes; the user might
+        // have switched from "auto" to "cpu" or vice versa.
+        const chatterboxDevice = tab.querySelector('#f---chatterbox-device');
+        if (chatterboxDevice) {
+            chatterboxDevice.addEventListener('change', refreshGpuBadge);
+        }
+        // Also re-check whenever the TTS backend changes (the badge is
+        // only relevant for chatterbox).
+        const ttsSelect = tab.querySelector('#f---tts');
+        if (ttsSelect) {
+            ttsSelect.addEventListener('change', () => {
+                refreshGpuBadge();
+                rerenderLibrary();
+            });
+        }
+
         const mount = el('div', { id: 'voice-library-mount' });
         tab.appendChild(mount);
-        renderVoiceLibrary(mount, state.settings, () => {
-            // onChange callback: when the user clicks "Set active" on a
-            // voice card, mirror the new name into --chatterbox-voice on
-            // the form so it gets saved with the rest of the settings.
-            renderAll();
-        });
+        const rerenderLibrary = () => renderVoiceLibrary(mount, state.settings, () => renderAll());
+        // Initial paint
+        rerenderLibrary();
     }
     updateSubgroupVisibility();
 }
@@ -364,11 +460,20 @@ function renderField(f, parentTitle) {
     return wrap;
 }
 
+function _settingValue(fieldName) {
+    // ``state.settings`` is keyed by CLI flag (``--llm-backend``, ``--tts``...)
+    // but the schema uses Python field names (``llm_backend``, ``tts``). Resolve
+    // either form so the visibility/disabled lookups don't silently miss.
+    if (fieldName in state.settings) return state.settings[fieldName];
+    const flag = '--' + String(fieldName).replace(/_/g, '-');
+    return state.settings[flag];
+}
+
 function updateSubgroupVisibility() {
     for (const group of state.schema.groups) {
         if (!group.subgroups) continue;
         for (const sub of group.subgroups) {
-            const sel = state.settings[sub.visible_when.field];
+            const sel = _settingValue(sub.visible_when.field);
             const show = sel === sub.visible_when.equals;
             const el = $(`[data-subgroup="${sub.id}"]`);
             if (el) el.style.display = show ? '' : 'none';
@@ -386,7 +491,7 @@ function applyDisabledStates() {
     for (const group of state.schema.groups) {
         for (const f of [...(group.fields || []), ...((group.subgroups || []).flatMap(s => s.fields || []))]) {
             if (!f.disabled_when) continue;
-            const watched = state.settings[f.disabled_when.field];
+            const watched = _settingValue(f.disabled_when.field);
             const shouldDisable = (f.disabled_when.in || []).includes(watched);
             const wrap = $(`#f-${f.flag}`)?.closest('.field');
             if (!wrap) continue;
@@ -904,7 +1009,21 @@ function renderControlTab(tab) {
 
 async function startPipeline() {
     try {
-        await postJSON('/api/process/start', { settings: state.settings });
+        const res = await postJSON('/api/process/start', { settings: state.settings });
+        if (res && res.restarting) {
+            // The dashboard is auto-installing the matching torch wheel
+            // and restarting so the new wheel is loaded. The browser will
+            // briefly lose its connection; reload the page and retry.
+            const wait = (res.retry_after_ms || 4000) / 1000;
+            toast(
+                `Installing GPU-compatible torch and restarting dashboard... ` +
+                `Reloading in ${wait.toFixed(0)}s.`,
+                'info',
+                10000,
+            );
+            setTimeout(() => window.location.reload(), res.retry_after_ms || 4000);
+            return;
+        }
         toast('Pipeline started.', 'success');
         pollStatus();
     } catch (e) {
