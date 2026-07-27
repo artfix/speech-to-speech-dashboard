@@ -24,6 +24,15 @@ const state = {
     ws: null,
     logIndex: 0,
     pendingRestartForVerbose: false,
+    // Curated Qwen3-TTS options loaded from /static/qwen3_models.json.
+    // null if the fetch fails (offline / old install) — renderField falls
+    // back to the introspected free-text input in that case.
+    qwen3Models: null,
+    // Curated value lists for free-form `str` fields whose Python
+    // annotations don't enumerate allowed values. Same pattern as
+    // qwen3Models: loaded from /static/field_choices.json. If null,
+    // every free-form `str` field renders as a plain text input.
+    fieldChoices: null,
 };
 
 // ---- Utility ---------------------------------------------------------
@@ -111,6 +120,32 @@ async function init() {
             getJSON('/api/themes'),
             getJSON('/api/version'),
         ]);
+        // Curated qwen3 model list is best-effort. If the static file is
+        // missing (older install / offline), we silently fall back to free-
+        // text inputs for the qwen3 subgroup. Don't let it break init.
+        try {
+            const r = await fetch('/static/qwen3_models.json', { cache: 'no-cache' });
+            if (r.ok) {
+                const j = await r.json();
+                if (j && Array.isArray(j.models) && j.models.length) {
+                    state.qwen3Models = j;
+                }
+            }
+        } catch (_) { /* offline / missing — fallback */ }
+        // field_choices.json is the smaller, flat sibling of qwen3_models.json.
+        // It enumerates valid values for free-form `str` fields (device, dtype,
+        // attention implementation, voice name, language code) so we render
+        // a <select> instead of a text input. Best-effort — if the file is
+        // missing we silently fall back.
+        try {
+            const r = await fetch('/static/field_choices.json', { cache: 'no-cache' });
+            if (r.ok) {
+                const j = await r.json();
+                if (j && j.choices && typeof j.choices === 'object') {
+                    state.fieldChoices = j.choices;
+                }
+            }
+        } catch (_) { /* offline / missing — fallback */ }
         state.schema = schema;
         state.defaults = settingsR.settings;
         state.settings = { ...settingsR.settings };
@@ -331,6 +366,15 @@ function renderSettingsTab(tab, groupId) {
         subEl.appendChild(subGrid);
         tab.appendChild(subEl);
     }
+    // Dashboard-only keepalive dropdown for Ollama / vLLM / llama.cpp. The
+    // setting is NOT introspected from the pipeline's argument dataclasses
+    // (upstream has no such flag — CLAUDE.md forbids editing src/), so we
+    // hand-roll a single dropdown inside the LLM tab's grid instead of
+    // going through the full renderField() path.
+    if (groupId === 'llm') {
+        const grid2 = tab.querySelector('.form-grid');
+        if (grid2) grid2.appendChild(renderKeepaliveField());
+    }
     // The voice library lives inside the TTS tab. It only renders when the
     // user has selected the chatterbox backend, so it sits below the
     // subgroup list and re-renders whenever the form is re-rendered or the
@@ -360,7 +404,19 @@ function renderSettingsTab(tab, groupId) {
 
         const mount = el('div', { id: 'voice-library-mount' });
         tab.appendChild(mount);
-        const rerenderLibrary = () => renderVoiceLibrary(mount, state.settings, () => renderAll());
+        // Two voice-library UIs coexist in this mount: the chatterbox
+        // voice library hides itself when --tts != "chatterbox"; the
+        // qwen3 voice library does the inverse. Calling both is
+        // idempotent because each one early-returns + hides the
+        // container when the other backend is selected. We pass the
+        // same DOM node so each backend fully owns the mount when it's
+        // active (the other's render() no-ops).
+        const rerenderLibrary = () => {
+            renderVoiceLibrary(mount, state.settings, () => renderAll());
+            if (typeof window.renderQwen3VoiceLibrary === 'function') {
+                window.renderQwen3VoiceLibrary(mount, state.settings, () => renderAll());
+            }
+        };
         // Initial paint
         rerenderLibrary();
     }
@@ -402,7 +458,140 @@ function renderField(f, parentTitle) {
 
     let input;
     const val = state.settings[f.flag];
-    if (f.ui === 'checkbox') {
+    // Curated dropdown for fields whose Python annotation is plain `str`
+    // (so the schema can't introspect allowed values) but we have a known
+    // short whitelist. Loaded from /static/field_choices.json at startup;
+    // silently falls back to free-text when the JSON or the per-flag entry
+    // is missing, so a missing choices file never blocks rendering.
+    const curatedChoices = state.fieldChoices && state.fieldChoices[f.flag];
+    const customSentinel = '__custom__';
+    // Helper to build the <select> for the curated dropdown, sharing the
+    // exact shape of the qwen3-model picker below (same __custom__
+    // escape-hatch). Returns the input element or null if the curated
+    // path doesn't apply for this field.
+    function tryCuratedSelect() {
+        if (!curatedChoices || !Array.isArray(curatedChoices) || curatedChoices.length === 0) {
+            return null;
+        }
+        if (f.ui !== 'text') {
+            // For Literal-typed fields (--qwen3-tts-backend,
+            // --qwen3-tts-mlx-quantization, --chatterbox-model-variant) the
+            // schema already provides f.choices; we don't override that.
+            return null;
+        }
+        const curVal = val == null ? '' : String(val);
+        const isCurated = curatedChoices.some((c) => String(c) === curVal);
+        const sel = el('select', {
+            class: 'field-select',
+            id: fieldId,
+            onchange: (e) => {
+                const v = e.target.value;
+                if (v === customSentinel) {
+                    // Swap this select out for a free-text input so the user
+                    // can type any value not in the curated list. The current
+                    // (now lost) selection is preserved only by intent — the
+                    // user types a fresh value.
+                    const freeText = el('input', {
+                        class: 'field-input',
+                        id: fieldId,
+                        type: 'text',
+                        placeholder: curatedChoices[0],
+                        oninput: (ev) => {
+                            state.settings[f.flag] = ev.target.value;
+                            applyDisabledStates();
+                        },
+                    });
+                    freeText.value = curVal && !isCurated ? curVal : '';
+                    sel.replaceWith(freeText);
+                    freeText.focus();
+                    return;
+                }
+                state.settings[f.flag] = v;
+                applyDisabledStates();
+            },
+        });
+        for (const c of curatedChoices) {
+            sel.appendChild(el('option', { value: String(c) }, String(c)));
+        }
+        sel.appendChild(el('option', { value: customSentinel }, 'Custom (type your own)'));
+        if (isCurated) {
+            sel.value = curVal;
+        } else if (curVal) {
+            // The current value isn't in the curated list -- switch to
+            // Custom so the user clearly sees this is non-standard, and
+            // they can save without us silently clamping.
+            sel.value = customSentinel;
+        }
+        return sel;
+    }
+    // Curated Qwen3-TTS model picker: when the curated JSON is loaded and
+    // this is the qwen3 model-name field, render a <select> of the upstream-
+    // supported model variants instead of a free-text input. Users can still
+    // pick "Custom…" to type any other HF Hub ID. This is purely additive —
+    // if state.qwen3Models is null, fall through to the standard text input
+    // below.
+    if (
+        f.flag === '--qwen3-tts-model-name'
+        && state.qwen3Models
+        && f.ui !== 'checkbox'
+    ) {
+        const models = state.qwen3Models.models || [];
+        const curVal = val == null ? '' : String(val);
+        const isCurated = models.some((m) => m.id === curVal);
+        const sel = el('select', {
+            class: 'field-select',
+            id: fieldId,
+            onchange: (e) => {
+                const v = e.target.value;
+                if (v === '__custom__') {
+                    // Swap this select out for a free-text input so the user
+                    // can type any HF Hub ID. Preserve the current curated
+                    // selection as the input's starting value.
+                    const freeText = el('input', {
+                        class: 'field-input',
+                        id: fieldId,
+                        type: 'text',
+                        placeholder: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice',
+                        oninput: (ev) => {
+                            state.settings[f.flag] = ev.target.value;
+                            applyDisabledStates();
+                        },
+                    });
+                    freeText.value = '';
+                    sel.replaceWith(freeText);
+                    freeText.focus();
+                    return;
+                }
+                state.settings[f.flag] = v;
+                applyDisabledStates();
+                updateQwen3RequiredHints();
+            },
+        });
+        for (const m of models) {
+            sel.appendChild(el('option', { value: m.id }, m.label));
+        }
+        sel.appendChild(el('option', { value: '__custom__' }, 'Custom (type your own HF Hub ID)'));
+        // Decide which option starts selected.
+        if (isCurated) {
+            sel.value = curVal;
+        } else if (curVal) {
+            // Value not in the curated list — preserve it by selecting Custom.
+            // To survive the reload we stash it on the select via a data attr
+            // and the change handler treats __custom__ as a switch-to-textbox
+            // signal, not a value.
+            sel.value = '__custom__';
+        }
+        // When the user picks a different model, the voice-library
+        // visibility rules change (e.g. Reference voices section only
+        // appears for Base models). Trigger a library re-render.
+        sel.addEventListener('change', () => {
+            if (typeof window.renderQwen3VoiceLibrary === 'function') {
+                const mount = document.getElementById('voice-library-mount');
+                if (mount) window.renderQwen3VoiceLibrary(mount, state.settings, () => renderAll());
+            }
+        });
+        input = sel;
+    } else if (f.ui === 'checkbox') {
         input = el('label', { class: 'field-checkbox' }, [
             el('input', {
                 type: 'checkbox',
@@ -447,28 +636,81 @@ function renderField(f, parentTitle) {
             },
         });
         input.value = val == null ? '' : String(val);
-    } else {  // text or number
-        input = el('input', {
-            class: 'field-input',
-            id: fieldId,
-            type: f.ui === 'number' ? 'number' : 'text',
-            step: f.ui === 'number' && f.type === 'float' ? 'any' : null,
-            oninput: (e) => {
-                const v = e.target.value;
-                if (f.ui === 'number') {
-                    state.settings[f.flag] = f.type === 'float' ? parseFloat(v) : parseInt(v, 10);
-                } else {
-                    state.settings[f.flag] = v;
+    } else {
+        // Generic path: a free-form text/number input by default, but
+        // swap in a curated <select> for fields whose values are known
+        // short whitelists (device, dtype, attention implementation,
+        // voice name, language code). See web_ui/static/field_choices.json
+        // for the source of truth; missing entries fall through to the
+        // standard text input silently.
+        const curated = tryCuratedSelect();
+        if (curated) {
+            input = curated;
+        } else {
+            input = el('input', {
+                class: 'field-input',
+                id: fieldId,
+                type: f.ui === 'number' ? 'number' : 'text',
+                step: f.ui === 'number' && f.type === 'float' ? 'any' : null,
+                oninput: (e) => {
+                    const v = e.target.value;
+                    if (f.ui === 'number') {
+                        state.settings[f.flag] = f.type === 'float' ? parseFloat(v) : parseInt(v, 10);
+                    } else {
+                        state.settings[f.flag] = v;
+                    }
+                    applyDisabledStates();
                 }
-                applyDisabledStates();
-            }
-        });
-        input.value = val == null ? '' : String(val);
+            });
+            input.value = val == null ? '' : String(val);
+        }
     }
 
     const help = el('div', { class: 'field-help', id: `help-${f.flag}` }, f.help || '(no help text)');
 
-    const wrap = el('div', { class: 'field' }, [label, input, help]);
+    // For the qwen3 reference-audio field, attach an inline "Upload…" button
+    // so the user can pick a file from disk and have it saved to voices/
+    // automatically. The returned absolute path fills the input.
+    let refAudioRow = null;
+    if (f.flag === '--qwen3-tts-ref-audio') {
+        const fileInput = el('input', {
+            type: 'file',
+            accept: 'audio/*',
+            style: { display: 'none' },
+            onchange: async (e) => {
+                const file = e.target.files && e.target.files[0];
+                if (!file) return;
+                const fd = new FormData();
+                fd.append('audio', file);
+                try {
+                    toast('Uploading reference audio…', 'info', 5000);
+                    const r = await fetch('/api/qwen3_ref_audio', { method: 'POST', body: fd });
+                    if (!r.ok) {
+                        const detail = await r.json().catch(() => ({}));
+                        toast('Upload failed: ' + (detail.detail || r.statusText), 'error', 6000);
+                        return;
+                    }
+                    const j = await r.json();
+                    state.settings[f.flag] = j.path;
+                    input.value = j.path;
+                    toast('Reference audio saved.', 'success');
+                    applyDisabledStates();
+                } catch (err) {
+                    toast('Upload failed: ' + err.message, 'error', 6000);
+                }
+            },
+        });
+        const uploadBtn = el('button', {
+            type: 'button',
+            class: 'btn btn-small',
+            style: { marginTop: '6px' },
+            onclick: () => fileInput.click(),
+        }, 'Upload reference audio…');
+        refAudioRow = el('div', { class: 'btn-row', style: { marginTop: '4px' } }, [fileInput, uploadBtn]);
+    }
+
+    const wrapChildren = refAudioRow ? [label, input, refAudioRow, help] : [label, input, help];
+    const wrap = el('div', { class: 'field' }, wrapChildren);
     // Optional String fields benefit from full width since they may be long.
     if (f.ui === 'textarea' || f.type === 'optional_string') {
         wrap.classList.add('full');
@@ -516,6 +758,130 @@ function applyDisabledStates() {
             if (input) input.disabled = shouldDisable;
         }
     }
+    updateQwen3RequiredHints();
+}
+
+// Mark the qwen3 ref_audio / ref_text / instruct fields with a small
+// "required for this model" hint when the currently-selected model variant
+// needs them. Driven by the curated JSON in state.qwen3Models.
+function updateQwen3RequiredHints() {
+    if (!state.qwen3Models) return;
+    const modelId = _settingValue('qwen3_tts_model_name');
+    const model = (state.qwen3Models.models || []).find((m) => m.id === modelId);
+    if (!model) return;
+    const need = new Set(model.requires || []);
+    const map = {
+        '--qwen3-tts-ref-audio': 'ref_audio',
+        '--qwen3-tts-ref-text': 'ref_text',
+        '--qwen3-tts-instruct': 'instruct',
+    };
+    for (const [flag, key] of Object.entries(map)) {
+        const wrap = $(`#f-${flag}`)?.closest('.field');
+        if (!wrap) continue;
+        let hint = wrap.querySelector('.field-required-hint');
+        if (need.has(key)) {
+            if (!hint) {
+                hint = el('span', { class: 'field-required-hint', style: { marginLeft: '8px', color: 'var(--accent)', fontSize: '11px', fontWeight: '600' } }, 'required');
+                const label = wrap.querySelector('.field-label');
+                if (label) label.appendChild(hint);
+            }
+        } else if (hint) {
+            hint.remove();
+        }
+    }
+}
+
+// ---- Ollama LLM keepalive (dashboard-only) -----------------------------
+//
+// The --llm-keepalive setting is dashboard-only: upstream has no such
+// argument, so the schema introspection doesn't register a field for it.
+// We hand-render a single <select> in the LLM tab using the curated list
+// baked into ``_KEEPALIVE_CURATED`` below, with a "Custom…" escape that
+// swaps in a free-text input — same pattern renderField() uses for the
+// qwen3-model picker. The value lives in state.settings["--llm-keepalive"]
+// and Save / Start / Restart on the server forward it to the dashboard-
+// side pinger via llm_keepaliver.update_from_settings.
+
+const _KEEPALIVE_CURATED = [
+    { value: "0",   label: "(off) — unload immediately" },
+    { value: "5m",  label: "5 minutes  (Ollama default)" },
+    { value: "15m", label: "15 minutes" },
+    { value: "30m", label: "30 minutes" },
+    { value: "1h",  label: "1 hour" },
+    { value: "2h",  label: "2 hours" },
+    { value: "12h", label: "12 hours" },
+    // "-1" is Ollama's "keep loaded forever" sentinel.
+    { value: "-1",  label: "Forever  (-1)" },
+];
+
+function renderKeepaliveField() {
+    const flag = '--llm-keepalive';
+    const fieldId = `f-${flag}`;
+    const hoverPreview =
+        'How long Ollama keeps the LLM model loaded in VRAM after the last request. ' +
+        'Ollama default is 5 minutes; the first reply after a longer pause pays a ~20s reload. ' +
+        'Pick a longer interval (or -1 for forever) to avoid that.';
+    const helpText =
+        'How long Ollama should keep the LLM model loaded in VRAM after the ' +
+        'last request. Ollama unloads after 5 minutes by default; the first ' +
+        'reply after a longer pause pays a ~20 s reload. A longer interval ' +
+        '(or "-1" for forever) avoids that at the cost of holding VRAM. ' +
+        'Custom accepts any Ollama duration: e.g. 45m, 90m, 4h, 0 (off), or -1.';
+    const label = el('label', { class: 'field-label', for: fieldId }, [
+        flag,
+        el('span', { class: 'field-flag' }, ''),
+        el('button', {
+            type: 'button', class: 'help-btn', title: hoverPreview,
+            onclick: (e) => {
+                e.preventDefault();
+                const field = e.currentTarget.closest('.field');
+                const help = field && field.querySelector('.field-help');
+                if (help) help.classList.toggle('visible');
+            },
+        }, '?'),
+    ]);
+
+    const curVal = (state.settings[flag] == null ? '' : String(state.settings[flag])).trim();
+    const isCurated = _KEEPALIVE_CURATED.some((c) => c.value === curVal);
+    const customSentinel = '__custom__';
+
+    const sel = el('select', {
+        class: 'field-select', id: fieldId,
+        onchange: (e) => {
+            const v = e.target.value;
+            if (v === customSentinel) {
+                const freeText = el('input', {
+                    class: 'field-input', id: fieldId, type: 'text',
+                    placeholder: 'e.g. 45m, 90m, 4h, -1, 0',
+                    oninput: (ev) => {
+                        state.settings[flag] = (ev.target.value || '').trim();
+                        applyDisabledStates();
+                    },
+                });
+                freeText.value = curVal || '';
+                state.settings[flag] = freeText.value;
+                sel.replaceWith(freeText);
+                freeText.focus();
+                freeText.select();
+                return;
+            }
+            state.settings[flag] = v;
+            applyDisabledStates();
+        },
+    });
+    for (const c of _KEEPALIVE_CURATED) {
+        sel.appendChild(el('option', { value: c.value }, c.label));
+    }
+    sel.appendChild(el('option', { value: customSentinel }, 'Custom (type your own)'));
+    if (isCurated || curVal === '') {
+        sel.value = curVal || '0';
+        if (curVal === '') state.settings[flag] = '0';
+    } else {
+        sel.value = customSentinel;
+    }
+
+    const help = el('div', { class: 'field-help', id: `help-${flag}` }, helpText);
+    return el('div', { class: 'field full' }, [label, sel, help]);
 }
 
 // ---- Status & Logs tab ----------------------------------------------
@@ -891,6 +1257,7 @@ function renderSettingsFileTab(tab) {
         el('button', { class: 'btn', onclick: resetSettings }, 'Reset to Defaults'),
         el('button', { class: 'btn', onclick: exportSettings }, 'Export JSON'),
         el('button', { class: 'btn', onclick: importSettings }, 'Import JSON'),
+        el('button', { class: 'btn', onclick: loadExampleSettings }, 'Load Example'),
     ]);
     tab.appendChild(row);
 }
@@ -990,6 +1357,29 @@ function importSettings() {
         }
     };
     input.click();
+}
+
+// One-click load of the bundled example config. Fetches the JSON from
+// /static-repo/ (the dashboard's repo-root mount) and merges it onto
+// the defaults, exactly like importSettings does for a user-picked file
+// — but with no file picker dialog. Useful on a fresh clone where the
+// user wants a real working config (Ollama + qwen3-TTS + parakeet STT,
+// realtime mode) instead of bare defaults. The example file lives at
+// the repo root and is also discoverable via the Settings tab's Import
+// JSON button.
+async function loadExampleSettings() {
+    try {
+        const r = await fetch('/static-repo/web_ui_settings.example.json', { cache: 'no-cache' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const obj = await r.json();
+        state.settings = { ...state.defaults, ...obj };
+        state.saved = false;
+        applyTheme(state.settings.theme || 'cyberpunk-neon');
+        toast('Example loaded (Ollama + qwen3-TTS + parakeet STT). Click Save to persist.', 'success');
+        renderAll();
+    } catch (e) {
+        toast('Could not load example: ' + e.message, 'error');
+    }
 }
 
 // ---- Control tab -----------------------------------------------------

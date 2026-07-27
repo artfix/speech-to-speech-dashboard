@@ -263,6 +263,32 @@ uv pip install --no-deps chatterbox-tts==0.1.7 \
 - Run `ollama list` on the Ollama machine to see what tags are pulled.
 - Test connectivity from the dashboard machine: `curl http://<ip>:11434/v1/models`.
 
+## Ollama: keep the LLM model loaded between requests
+
+Ollama unloads a model from VRAM **5 minutes** after the last request by
+default. For a voice-agent pipeline that's painful — the next user
+utterance after a 5-minute pause pays a ~20 s reload before the first
+token. The dashboard exposes an **`--llm-keepalive`** dropdown on the
+**LLM** tab (visible only when `--llm-backend` is `chat-completions` or
+`responses-api`, i.e. an OpenAI-compat backend pointing at Ollama /
+vLLM / llama.cpp). Pick how long Ollama should hold the model:
+
+| Option | Behavior |
+|---|---|
+| `(off)` | Don't refresh — Ollama's native unload timer applies (default 5 min). |
+| `5m` / `15m` / `30m` | Send a tiny `/v1/chat/completions` ping at half the interval so Ollama's idle timer keeps resetting. |
+| `1h` / `2h` / `12h` | Same, for long-idle sessions. |
+| `Forever (-1)` | Ollama-specific "never unload" sentinel. |
+| `Custom (type your own)` | Any Ollama duration: `45m`, `90m`, `4h`, `0`, `-1`. |
+
+The pinger runs as a dashboard-side daemon thread — it doesn't touch
+`src/speech_to_speech/` (CLAUDE.md forbids editing the pipeline) and
+it only activates when the selected backend is Ollama-style. It stops
+automatically when you Stop or Restart the pipeline, and on Save
+Settings. Pick a value, click **Save Settings**, then **▶ Start
+Pipeline** (or **↻ Restart Pipeline** if it's already running) — the
+pinger comes up alongside the pipeline.
+
 ## Pipeline won't start, exits immediately
 
 Open the **Status & Logs** tab and look at the error. Common causes:
@@ -285,6 +311,76 @@ If you want to free **everything**, click **■ Stop Pipeline**. The subprocess 
 
 `web_ui_settings.json` in the repo root. It's gitignored by default. You can edit it directly, import / export it via the **Settings** tab, or delete it to reset to defaults.
 
+A working example configuration is checked in as `web_ui_settings.example.json`. From the **Settings** tab, click **Import JSON** and pick that file to start with a real configuration (Ollama + qwen3-TTS + parakeet STT, realtime mode) instead of bare defaults.
+
 ## How do I get the realtime WebSocket URL?
 
 When the pipeline is running in `realtime` mode, it listens on `ws://<host>:8765/v1/realtime` by default. The dashboard proxies its `/v1/pool` status endpoint, visible in the Status tab. You can connect any OpenAI Realtime-compatible client (browser, app, robot) to that URL.
+
+## Qwen3-TTS: voice selection in Realtime clients
+
+When you connect an OpenAI Realtime client to the pipeline, the client
+sends `voice` in `session.update`. qwen3-TTS doesn't recognize OpenAI's
+`alloy` / `echo` / `shimmer` / `ash` / `ballad` / `coral` / `sage` /
+`verse` / `marin` / `cedar` voice names — those are OpenAI TTS voices,
+not qwen3 speakers.
+
+The dashboard **silently ignores the client's `voice` field** and uses
+whatever you set in **Settings → TTS → Qwen3-TTS → Speaker**. To change
+the voice:
+
+1. Open the dashboard's **Settings** tab → **TTS** → **Qwen3-TTS** subgroup.
+2. Pick a speaker from the **Speaker** dropdown. The 9 CustomVoice
+   presets are listed (Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan,
+   Aiden, Ono_Anna, Sohee).
+3. Click **Save Settings**, then **▶ Start Pipeline** (or restart if
+   it's already running).
+
+The voice library panel under the TTS tab also has a **Set active**
+button on each card — click it for a one-click "use this voice".
+Each card has a **Test** button that synthesizes a sample sentence
+in the speaker's native language so you can hear it before committing.
+
+## Qwen3-TTS: voice cloning (Base) and VoiceDesign — ABI v2 limitation
+
+The bundled `qwentts-cpp-python` wheel exposed to the dashboard on
+Pascal (sm_61) GPUs is **ABI v1 only**. The voice-cloning path
+(`ref_audio` + `ref_text` on a Base model) and the voice-design path
+(`instruct` text on a VoiceDesign model) need ABI v2 symbols
+(`qt_extract_voice_ref`, `qt_voice_ref_free`) that are not in the
+public `andimarafioti/qwentts.cpp` source — they're in an unreleased
+private commit the PyPI wheel was built against.
+
+What this means for you on this Pascal GPU:
+
+- ✅ **CustomVoice models work fully end-to-end.** The 9 preset speakers
+  are baked into the model weights; no enumeration or reference audio
+  is required at runtime. Pick one from the dashboard, save, the
+  Realtime pipe speaks in that voice.
+- ⚠ **Base models** (voice cloning via `ref_audio` + `ref_text`) load
+  fine but synthesize fails with
+  `QwenTTSError: qt_extract_voice_ref is unavailable; voice reference
+  extraction requires qwentts.cpp ABI v2`. The dashboard shows a
+  yellow banner when you select a Base model. Reference audio uploads
+  still work (files are saved under `voices/qwen3_refs/`) — they're
+  ready for the day upstream publishes ABI v2 source.
+- ⚠ **VoiceDesign models** (`instruct` text) have the same ABI v2
+  limitation; same banner, same "wait for upstream" path.
+
+On a different GPU (e.g. an RTX 30/40 series) where the upstream wheel
+ships ABI v2 symbols, all 5 qwen3-TTS models work fully — voice cloning
+and voice design light up automatically with the same dashboard
+configuration, no extra dashboard work needed.
+
+## Qwen3-TTS: which model to pick?
+
+Pick **`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`** unless you have a
+specific reason. It has the highest audio quality, supports all 9
+preset speakers on GPU, and is the version with the most usage in
+production.
+
+The 0.6B CustomVoice model is ~3× smaller and noticeably faster on
+Pascal (sm_61) cards; quality is still good but slightly below the
+1.7B. Worth switching to if you're CPU-constrained or want faster
+time-to-first-audio.
+

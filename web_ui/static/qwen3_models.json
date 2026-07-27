@@ -1,0 +1,51 @@
+{
+  "_comment": "Curated Qwen3-TTS model variants for the dashboard. Only includes model IDs verified against the official Qwen3-TTS HuggingFace releases. Used by web_ui/static/app.js to render a <select> for --qwen3-tts-model-name and to flag which downstream fields (ref_audio, ref_text, instruct) are required per variant. Speaker names live in web_ui/static/field_choices.json (--qwen3-tts-speaker, 9 names, both CustomVoice variants). Supported languages per speaker are documented inline in web_ui/static/qwen3_voice_library_ui.js (native sample sentences). Cloning (ref_audio on Base models) and voice-design (instruct text on VoiceDesign) paths require ABI v2 symbols not yet in the public qwentts.cpp source -- we set needs_abi_v2 on those variants so the UI can show a banner explaining the limitation.",
+  "version": 2,
+  "models": [
+    {
+      "id": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+      "label": "Qwen3-TTS 12Hz 1.7B CustomVoice (preset speakers, no reference audio needed)",
+      "requires": [],
+      "uses_speaker": true,
+      "uses_instruct": false,
+      "uses_ref_audio": false,
+      "needs_abi_v2": false
+    },
+    {
+      "id": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "label": "Qwen3-TTS 12Hz 0.6B CustomVoice (smaller, faster, same 9 preset speakers)",
+      "requires": [],
+      "uses_speaker": true,
+      "uses_instruct": false,
+      "uses_ref_audio": false,
+      "needs_abi_v2": false
+    },
+    {
+      "id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+      "label": "Qwen3-TTS 12Hz 1.7B Base (voice cloning via reference audio + reference text — requires ABI v2)",
+      "requires": ["ref_audio", "ref_text"],
+      "uses_speaker": false,
+      "uses_instruct": false,
+      "uses_ref_audio": true,
+      "needs_abi_v2": true
+    },
+    {
+      "id": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+      "label": "Qwen3-TTS 12Hz 1.7B VoiceDesign (synthesize a new voice from a text instruct prompt — requires ABI v2)",
+      "requires": ["instruct"],
+      "uses_speaker": false,
+      "uses_instruct": true,
+      "uses_ref_audio": false,
+      "needs_abi_v2": true
+    },
+    {
+      "id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+      "label": "Qwen3-TTS 12Hz 0.6B Base (smaller, voice cloning — requires ABI v2)",
+      "requires": ["ref_audio", "ref_text"],
+      "uses_speaker": false,
+      "uses_instruct": false,
+      "uses_ref_audio": true,
+      "needs_abi_v2": true
+    }
+  ]
+}

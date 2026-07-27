@@ -43,6 +43,88 @@ BUFFER_SIZE = 5000
 STOP_TIMEOUT_S = 5.0
 
 
+def _default_ld_library_path() -> str:
+    """Collect the nvidia-*/lib/ paths from this interpreter's site-packages.
+
+    The torch 2.6.0+cu126 wheel we install for Pascal (sm_61) ships its
+    CUDA / cuDNN / cuSPARSE / NCCL / nvshmem runtime libs under
+    ``site-packages/nvidia/<name>/lib/`` -- five of them: ``cu13``,
+    ``cudnn``, ``cusparselt``, ``nccl``, ``nvshmem``. ``import torch``
+    resolves those via dlopen, which only consults ``LD_LIBRARY_PATH``
+    and the system ldconfig cache -- it does not look inside
+    site-packages. On the user's box none of those paths are otherwise
+    on the linker search path, so the first ``import torch`` inside
+    the pipeline subprocess dies with::
+
+        ImportError: libcusparseLt.so.0: cannot open shared object file:
+        No such file or directory
+
+    even though the file is sitting right there. We assemble those
+    paths here and prepend them to ``LD_LIBRARY_PATH`` for the
+    subprocess (and for the dashboard process itself, so the qwentts
+    probe API can ``import qwentts_cpp``).
+
+    Cross-platform: on macOS the nvidia dir never exists, so this
+    returns ``""`` and we leave the env alone.
+    """
+    try:
+        import site  # noqa: PLC0415
+        sp_paths = [Path(p) for p in site.getsitepackages()]
+    except Exception:  # noqa: BLE001
+        sp_paths = [Path(p) for p in sys.path if "site-packages" in p]
+
+    out: list[str] = []
+    for sp in sp_paths:
+        nvidia = sp / "nvidia"
+        if not nvidia.is_dir():
+            continue
+        for sub in sorted(nvidia.iterdir()):
+            lib = sub / "lib"
+            if lib.is_dir():
+                out.append(str(lib))
+    return ":".join(out)
+
+
+# Set LD_LIBRARY_PATH in our own process env the first time this module
+# is imported, IF the user hasn't already set it. Idempotent: re-imports
+# are no-ops because we only set when the key is missing. The dashboard
+# doesn't import torch at startup, so this only matters for handlers
+# that probe GPU state at request time (e.g. /api/qwentts/pascal_wheel).
+#
+# Critical: ``os.environ`` is a Python dict that mirrors the C runtime's
+# env table at process startup. Mutating it does NOT change the C
+# runtime's view -- and dlopen (which torch's __init__.py calls into) is
+# a C-level API that consults the C env, not Python's. So we have to
+# call libc ``setenv(3)`` ourselves via ctypes. Otherwise the env looks
+# fine in Python but in-process handlers still fail with ``ImportError:
+# libcusparseLt.so.0``. (For the SUBprocess the dashboard spawns, the
+# fix lives in ``_build_env`` below -- that path copies ``os.environ``
+# into a fresh env dict that ``Popen`` hands to the child, and the
+# child's C runtime picks up LD_LIBRARY_PATH via execve.)
+_DEFAULT_LD = _default_ld_library_path()
+if _DEFAULT_LD and "LD_LIBRARY_PATH" not in os.environ:
+    os.environ["LD_LIBRARY_PATH"] = _DEFAULT_LD
+    try:
+        import ctypes  # noqa: PLC0415
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        # setenv(name, value, overwrite=1). Explicit argtypes/rtype --
+        # the ctypes default would truncate the c_char_p return of
+        # subsequent getenv() and silently mis-cast pointers.
+        libc.setenv.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        libc.setenv.restype = ctypes.c_int
+        libc.setenv(b"LD_LIBRARY_PATH", _DEFAULT_LD.encode("utf-8"), 1)
+        logger.info(
+            "Set LD_LIBRARY_PATH in C runtime (in-process): %s",
+            _DEFAULT_LD[:120] + ("..." if len(_DEFAULT_LD) > 120 else ""),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Could not propagate LD_LIBRARY_PATH to the C runtime; "
+            "GPU-using endpoints may fail with libcusparseLt.so.0 not found."
+        )
+
+
 # Matches the pipeline's own logging format:
 #   "2026-07-23 14:33:12,345 - speech_to_speech.s2s_pipeline - INFO - hello"
 # We make the timestamp and name optional so that other writes (warnings during
@@ -116,6 +198,16 @@ class PipelineProcess:
         with self._lock:
             if self._state.process is not None and self._state.process.poll() is None:
                 raise RuntimeError("Pipeline is already running; stop it first.")
+            # Best-effort Pascal wheel install for qwen3-TTS on sm_61 GPUs.
+            # No-op on Volta+ or when qwen3 isn't selected. Raises are swallowed.
+            try:
+                from web_ui.qwentts_installer import install_pascal_wheel_if_needed
+
+                install_result = install_pascal_wheel_if_needed(settings)
+                if install_result.get("status") not in (None, "skipped", "already-installed"):
+                    logger.info("qwentts Pascal wheel installer: %s", install_result)
+            except Exception:  # noqa: BLE001
+                logger.exception("qwentts Pascal wheel installer crashed; continuing")
             argv = build_argv(settings)
             env = self._build_env(settings.get("env") or [])
             self._maybe_inject_openai_api_key(settings, env)
@@ -293,6 +385,12 @@ class PipelineProcess:
         Items that don't contain ``=`` are ignored (with a warning). The
         existing process environment is preserved so things like
         ``PATH``, ``HOME``, and platform defaults still work.
+
+        We also prepend the nvidia-* runtime library paths discovered
+        by :func:`_default_ld_library_path` to ``LD_LIBRARY_PATH`` --
+        ``import torch`` in the subprocess needs them on Pascal (sm_61)
+        systems where torch ships cu126 nvidia wheels but the system
+        ldconfig cache has no sm_61-compatible libcusparseLt.
         """
         out = dict(os.environ)
         for raw in env_list:
@@ -301,6 +399,15 @@ class PipelineProcess:
                 continue
             k, _, v = raw.partition("=")
             out[k.strip()] = v
+        # Make sure the bundled nvidia-*/lib/ paths are reachable by
+        # the subprocess. The user's env editor can still override
+        # LD_LIBRARY_PATH entirely (we just merge onto whatever is
+        # there).
+        if _DEFAULT_LD:
+            existing = out.get("LD_LIBRARY_PATH", "")
+            out["LD_LIBRARY_PATH"] = (
+                _DEFAULT_LD + (":" + existing if existing else "")
+            )
         # Force unbuffered output from the child so logs stream in real time.
         out["PYTHONUNBUFFERED"] = "1"
         return out

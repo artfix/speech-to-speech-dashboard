@@ -47,6 +47,7 @@ from web_ui.gpu import (
     install_wheel,
     resolution_for_device,
 )
+from web_ui.llm_keepalive import KeepaliveStatus, LLMKeepAliver
 from web_ui.process_manager import LogLine, PipelineProcess
 from web_ui.settings_schema import get_defaults, get_full_schema
 from web_ui.voice_library import (
@@ -55,6 +56,12 @@ from web_ui.voice_library import (
     list_voices,
     save_voice,
     synthesize_test,
+)
+from web_ui.qwentts_voice_library import (
+    PRESET_SPEAKERS,
+    Qwen3NotInstalled,
+    list_ref_audio_files,
+    synthesize_qwen3_test,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,6 +149,14 @@ class DashboardState:
 state = DashboardState()
 
 
+# Background pinger that refreshes Ollama's ``keep_alive`` timer when the
+# user has set ``--llm-keepalive`` to anything other than ``"0"``. The
+# pipeline's CLI flags don't expose ``keep_alive`` (CLAUDE.md forbids
+# editing ``src/speech_to_speech/``), so we refresh it from the dashboard
+# side instead. See ``web_ui/llm_keepalive.py`` for the pinger itself.
+llm_keepaliver = LLMKeepAliver()
+
+
 # ----------------------------------------------------------------------
 # FastAPI app
 # ----------------------------------------------------------------------
@@ -160,6 +175,11 @@ async def lifespan(_app: FastAPI):
         except Exception:  # noqa: BLE001
             logger.exception("Error stopping pipeline on shutdown")
         state.process.unsubscribe(state.broadcast)
+        # Tear down the keepalive pinger so the dashboard exits cleanly.
+        try:
+            llm_keepaliver.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("Error stopping llm keepalive pinger on shutdown")
 
 
 app = FastAPI(title="speech-to-speech dashboard", lifespan=lifespan)
@@ -190,6 +210,14 @@ def api_post_settings(body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Body must be an object")
     # The frontend sends the full settings object. We only persist it.
     _write_settings(body)
+    # Keep the Ollama keepalive pinger in sync with the new value. We
+    # call this AFTER the write so a transient Ollama outage doesn't lose
+    # the user's saved setting — the pinger reads from the settings dict
+    # the user just confirmed, not from disk.
+    try:
+        llm_keepaliver.update_from_settings(body)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to update llm keepalive from settings save")
     return {"ok": True, "path": str(SETTINGS_PATH)}
 
 
@@ -206,6 +234,13 @@ def api_patch_settings(body: dict[str, Any]) -> dict[str, Any]:
     current = _read_settings() or {}
     current.update(body)
     _write_settings(current)
+    # Re-evaluate the keepalive pinger after a per-field patch too — this
+    # catches the (uncommon) case where someone POSTs `--llm-keepalive`
+    # via the patch endpoint directly.
+    try:
+        llm_keepaliver.update_from_settings(current)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to update llm keepalive from settings patch")
     return {"ok": True, "path": str(SETTINGS_PATH), "settings": current}
 
 
@@ -317,6 +352,221 @@ async def api_clone_voice(
     except (ValueError, FileExistsError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True, "voice": entry.to_dict()}
+
+
+@app.post("/api/qwen3_ref_audio")
+async def api_qwen3_ref_audio(audio: UploadFile = File(...)) -> dict[str, Any]:
+    """Save a reference audio file for Qwen3-TTS voice cloning.
+
+    The file is written under ``voices/qwen3_refs/`` with a UUID-prefixed
+    filename so concurrent uploads don't collide. Returns the absolute path
+    that should be passed as ``--qwen3-tts-ref-audio``.
+
+    The qwen3-TTS handler accepts any audio format its underlying decoder
+    supports; we keep the original extension (defaulting to .wav) so the
+    handler's audio loader can find a matching decoder.
+    """
+    if not audio or not audio.filename:
+        raise HTTPException(status_code=400, detail="Missing audio file")
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    import uuid as _uuid
+
+    suffix = os.path.splitext(audio.filename)[1].lower() or ".wav"
+    if suffix not in {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".opus", ".aac"}:
+        # Be permissive but default to .wav if the extension is something
+        # exotic so the file still has a sensible name on disk.
+        suffix = ".wav"
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    target_dir = os.path.join(repo_root, "voices", "qwen3_refs")
+    os.makedirs(target_dir, exist_ok=True)
+    fname = f"{_uuid.uuid4().hex}{suffix}"
+    target = os.path.join(target_dir, fname)
+    with open(target, "wb") as f:
+        f.write(raw)
+    return {"ok": True, "path": target, "size_bytes": len(raw)}
+
+
+# ---- Qwen3-TTS voice library -----------------------------------------------
+#
+# The CustomVoice model variant exposes 9 preset speakers (Vivian, Serena,
+# Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee). The dashboard's
+# voice library UI lets the user browse + preview those speakers, and
+# (when a Base model is selected) the reference audio files they've
+# uploaded under ``voices/qwen3_refs/``. Voice cloning itself runs
+# through the model at runtime -- the dashboard's only job here is to
+# surface speakers + run one-shot test synthesis. Synthesis happens
+# through ``web_ui.qwentts_voice_library.synthesize_qwen3_test``, which
+# uses the same qwentts_cpp high-level API the pipeline calls.
+
+
+@app.get("/api/qwen3/voices")
+def api_qwen3_list_voices() -> dict[str, Any]:
+    """Return the 9 CustomVoice preset speakers + any uploaded ref-audio files.
+
+    The frontend renders this as the "Voice library" panel inside the
+    TTS tab when ``--tts qwen3`` is selected. The response is intentionally
+    minimal: the client already knows the speaker metadata (sample
+    sentences, language codes) from ``PRESET_SPEAKERS`` baked into
+    ``qwen3_voice_library_ui.js``; we just send ref-audio file metadata
+    + the active speaker flag so the active card gets the highlight.
+    """
+    current = _read_settings() or {}
+    active_speaker = current.get("--qwen3-tts-speaker") or ""
+    ref_files = [e.to_dict() for e in list_ref_audio_files()]
+    return {
+        "presets": PRESET_SPEAKERS,
+        "active_speaker": active_speaker,
+        "ref_audio_files": ref_files,
+    }
+
+
+@app.post("/api/qwen3/voice/{speaker}/set-active")
+def api_qwen3_set_active_voice(speaker: str) -> dict[str, Any]:
+    """Write ``speaker`` into ``--qwen3-tts-speaker`` in the settings file.
+
+    Mirrors the chatterbox ``/api/voices/{name}/set-active`` endpoint so
+    the voice library UI can use the same one-click pattern. Also flips
+    ``--tts`` to ``qwen3`` if it isn't already so the dashboard and the
+    pipeline agree on the backend -- otherwise the saved flag would be
+    silently dropped by the form schema (which only persists flags
+    whose parent backend is selected).
+    """
+    current = _read_settings() or {}
+    # Reject anything outside the 9 verified speaker names. We do NOT
+    # accept arbitrary strings here even though the form field allows
+    # them, because the voice library UI specifically says "Set active"
+    # for a known preset. Custom values can still be typed directly into
+    # the ``--qwen3-tts-speaker`` dropdown.
+    preset_names = {p["name"] for p in PRESET_SPEAKERS}
+    if speaker not in preset_names:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Speaker {speaker!r} is not one of the 9 CustomVoice presets: "
+                f"{sorted(preset_names)}. Use the dropdown's 'Custom' option to "
+                "set a non-preset value."
+            ),
+        )
+    current["--qwen3-tts-speaker"] = speaker
+    if current.get("--tts") != "qwen3":
+        current["--tts"] = "qwen3"
+    _write_settings(current)
+    return {"ok": True, "speaker": speaker, "settings": current}
+
+
+@app.post("/api/qwen3/voice/test")
+def api_qwen3_voice_test(body: dict[str, Any]) -> Response:
+    """Synthesize a short preview for a qwen3 voice and return WAV bytes.
+
+    Body shape (all optional except ``text``):
+
+    - ``text``: string to synthesize.
+    - ``speaker``: one of the 9 CustomVoice presets (CustomVoice).
+    - ``language``: qwen3 language code (``"english"``, ``"chinese"``,
+      ``"japanese"``, ``"korean"``, ``"auto"``). Defaults to the
+      speaker's native language when ``speaker`` is set, else
+      ``"english"``.
+    - ``model_id``: HF Hub model ID. Defaults to
+      ``Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice``.
+    - ``ref_audio``: path to a reference audio file (Base voice cloning).
+    - ``ref_text``: transcript of the reference audio.
+    - ``instruct``: voice description (VoiceDesign).
+    - ``seed``/``temperature``/``top_p``/``top_k``/``repetition_penalty``:
+      sampling params forwarded straight to ``QwenTTS.synthesize``.
+    - ``device``: ``"cuda"`` (default) or ``"cpu"``.
+
+    Returns ``audio/wav`` (24 kHz mono int16 PCM).
+
+    The frontend uses this for both the CustomVoice preset Test button
+    AND the Reference-voice Test button. For Reference voices on this
+    Pascal wheel the synthesis will fail with
+    ``QwenTTSError: qt_extract_voice_ref is unavailable; voice reference
+    extraction requires qwentts.cpp ABI v2`` -- we surface that as a 400
+    with the exact qwentts error message in the JSON detail so the UI
+    can show the ABI v2 explanation banner.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=400, detail="Field 'text' is required")
+
+    # Translate the speaker name -> language code when the caller
+    # omitted ``language``. The CustomVoice speakers are optimized for
+    # their native language, so using the speaker's native lang for the
+    # test gives the user the truest preview.
+    speaker = body.get("speaker")
+    language = body.get("language")
+    if not language and isinstance(speaker, str) and speaker:
+        from web_ui.qwentts_voice_library import PRESET_BY_NAME  # noqa: PLC0415
+        match = PRESET_BY_NAME.get(speaker)
+        if match:
+            language = match["language"]
+
+    try:
+        wav_bytes = synthesize_qwen3_test(
+            speaker=speaker if isinstance(speaker, str) and speaker else None,
+            text=text,
+            language=language or "english",
+            model_id=body.get("model_id") or "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            ref_audio=body.get("ref_audio") if isinstance(body.get("ref_audio"), str) else None,
+            ref_text=body.get("ref_text") if isinstance(body.get("ref_text"), str) else None,
+            instruct=body.get("instruct") if isinstance(body.get("instruct"), str) else None,
+            seed=int(body.get("seed", -1)),
+            temperature=float(body.get("temperature", 0.9)),
+            top_p=float(body.get("top_p", 1.0)),
+            top_k=int(body.get("top_k", 50)),
+            repetition_penalty=float(body.get("repetition_penalty", 1.05)),
+            device=body.get("device") or "cuda",
+        )
+    except Qwen3NotInstalled as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "qwen3_not_installed", "message": str(e)},
+        ) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"error": "bad_request", "message": str(e)}) from e
+    except Exception as e:  # noqa: BLE001
+        # Catch QwenTTSError (and anything else the binding raises) and
+        # surface as a 400 with the original message. The frontend shows
+        # this verbatim in a toast -- if the message mentions ABI v2
+        # the UI already knows to show the "needs ABI v2" banner.
+        msg = str(e) or e.__class__.__name__
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "synthesis_failed", "message": msg},
+        ) from e
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
+@app.delete("/api/qwen3_ref_audio/{name}")
+def api_qwen3_delete_ref_audio(name: str) -> dict[str, Any]:
+    """Remove an uploaded reference audio file from ``voices/qwen3_refs/``.
+
+    Used by the voice library UI's Reference voices section so the user
+    can delete a stale upload. We don't validate that the file is in
+    the ref-audio directory (only its basename is matched) to keep the
+    endpoint simple; the matcher below restricts to that directory by
+    construction.
+    """
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid file name")
+    from web_ui.qwentts_voice_library import REF_AUDIO_DIR  # noqa: PLC0415
+    target = REF_AUDIO_DIR / name
+    if not target.is_file() or REF_AUDIO_DIR not in target.resolve().parents:
+        raise HTTPException(status_code=404, detail=f"Ref audio {name!r} not found")
+    try:
+        target.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not delete {name}: {e}") from e
+    # If the deleted file was the currently configured ref_audio, clear it.
+    current = _read_settings() or {}
+    if current.get("--qwen3-tts-ref-audio") == str(target):
+        current["--qwen3-tts-ref-audio"] = ""
+        _write_settings(current)
+    return {"ok": True, "name": name}
 
 
 @app.delete("/api/voices/{name}")
@@ -609,6 +859,43 @@ def api_gpu_check() -> dict[str, Any]:
     return check_gpu().to_dict()
 
 
+@app.get("/api/qwentts/pascal_wheel")
+def api_qwentts_pascal_wheel() -> dict[str, Any]:
+    """Status of the Pascal (sm_61) qwentts-cpp-python wheel bundle.
+
+    Reports whether a Pascal-compatible wheel is bundled, whether the
+    installed ``qwentts-cpp-python`` matches it, and the result of the
+    last install attempt (cached in ``~/.cache/speech-to-speech-dashboard/``).
+    Useful for the UI to surface "Pascal wheel installed" / "wheel bundled
+    but not installed" badges next to the qwen3 TTS dropdown.
+    """
+    from web_ui.qwentts_installer import (
+        _bundled_wheel_dir,
+        _detect_compute_capability,
+        _matching_wheel,
+        _read_cache,
+    )
+
+    cc = _detect_compute_capability()
+    wheel_dir = _bundled_wheel_dir()
+    bundled = _matching_wheel()
+    installed_version = None
+    try:
+        from importlib.metadata import version
+
+        installed_version = version("qwentts-cpp-python")
+    except Exception:
+        pass
+    return {
+        "compute_capability": cc,
+        "is_pascal": cc in {"6.1", "6.2"},
+        "wheel_dir": str(wheel_dir),
+        "bundled_wheel": str(bundled) if bundled else None,
+        "installed_version": installed_version,
+        "last_install": _read_cache(),
+    }
+
+
 @app.post("/api/gpu/fix")
 def api_gpu_fix() -> dict[str, Any]:
     """Probe the GPU, install the matching torch wheel in the background.
@@ -894,6 +1181,15 @@ def api_process_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
         state.process.start(settings)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    # Spin up the Ollama keepalive pinger using the freshly-saved settings.
+    # We do this AFTER the pipeline subprocess has been started so a slow
+    # pinger startup can't delay the pipeline's first LLM call. The pinger
+    # itself is a no-op if the user picked a non-Ollama backend or left
+    # ``--llm-keepalive`` at its default "0".
+    try:
+        llm_keepaliver.update_from_settings(settings)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to update llm keepalive from process start")
     status = state.process.get_status()
     status["gpu_message"] = gpu_msg
     return {"ok": True, "status": status}
@@ -902,6 +1198,13 @@ def api_process_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
 @app.post("/api/process/stop")
 def api_process_stop() -> dict[str, Any]:
     state.process.stop()
+    # Stop the Ollama keepalive pinger too — there's no pipeline to keep
+    # the model warm for, and the user's next Start may pick a different
+    # backend / model.
+    try:
+        llm_keepaliver.stop()
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to stop llm keepalive on process stop")
     return {"ok": True, "status": state.process.get_status()}
 
 
@@ -911,12 +1214,105 @@ def api_process_restart(body: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(settings, dict):
         raise HTTPException(status_code=400, detail="Body must include 'settings' object")
     state.process.restart(settings)
+    # Same keepalive refresh as Start — the user may have edited
+    # ``--llm-keepalive`` since the last start.
+    try:
+        llm_keepaliver.update_from_settings(settings)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to update llm keepalive on restart")
     return {"ok": True, "status": state.process.get_status()}
 
 
 @app.get("/api/process/status")
 def api_process_status() -> dict[str, Any]:
     return state.process.get_status()
+
+
+# ---- LLM keepalive (Ollama) ----------------------------------------------
+#
+# When the user picks a remote OpenAI-compatible LLM backend
+# (``chat-completions`` or ``responses-api``, the slots that point at
+# Ollama / vLLM / llama.cpp) and sets ``--llm-keepalive`` to anything
+# other than "0", we run a dashboard-side pinger that posts a tiny
+# /v1/chat/completions request to that endpoint with
+# ``keep_alive: <value>`` in the body. This resets Ollama's idle timer
+# so a long conversation gap doesn't pay a ~20s reload penalty before
+# the next reply.
+#
+# The pinger itself lives in ``web_ui.llm_keepalive.py``; the surface
+# here is intentionally tiny -- three endpoints to inspect + control
+# it manually if the UI ever needs that. The ``/api/settings`` and
+# process-start/stop/restart hooks already drive it from the main
+# settings flow, so most users will never hit these directly.
+
+
+def _keepalive_status_to_dict(s: KeepaliveStatus) -> dict[str, Any]:
+    """Convert a KeepaliveStatus dataclass into a JSON-safe dict.
+
+    The ``config`` field carries another dataclass; flatten it here so
+    FastAPI's JSON encoder can serialize it without complaint.
+    """
+    out = {
+        "running": s.running,
+        "last_ping_at": s.last_ping_at,
+        "last_ping_ok": s.last_ping_ok,
+        "last_ping_error": s.last_ping_error,
+        "next_ping_at": s.next_ping_at,
+        "ping_count": s.ping_count,
+        "ping_failures": s.ping_failures,
+        "started_at": s.started_at,
+        "thread_id": s.thread_id,
+        "config": None,
+    }
+    if s.config is not None:
+        c = s.config
+        out["config"] = {
+            "base_url": c.base_url,
+            "api_key": "***" if c.api_key else "",
+            "model_name": c.model_name,
+            "keepalive": c.keepalive,
+            "ping_interval_s": c.ping_interval_s,
+        }
+    return out
+
+
+@app.get("/api/llm-keepalive/status")
+def api_llm_keepalive_status() -> dict[str, Any]:
+    """Snapshot of the Ollama keepalive pinger for the LLM-tab badge.
+
+    Returns the full status (running, ping cadence, last error, etc.)
+    plus the active config (with the API key masked). Safe to poll.
+    """
+    return _keepalive_status_to_dict(llm_keepaliver.status())
+
+
+@app.post("/api/llm-keepalive/restart")
+def api_llm_keepalive_restart(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Restart the keepalive pinger with the supplied config.
+
+    Useful for "I just changed --llm-keepalive in the form but haven't
+    pressed Save yet" — the UI can POST a partial config to apply it
+    immediately without rewriting the settings file. The actual settings
+    persistence happens via the regular ``/api/settings`` flow.
+    """
+    settings = (body or {}).get("settings")
+    if not isinstance(settings, dict):
+        raise HTTPException(
+            status_code=400, detail="Body must include 'settings' object"
+        )
+    try:
+        llm_keepaliver.update_from_settings(settings)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Failed to restart llm keepalive pinger")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return {"ok": True, "status": _keepalive_status_to_dict(llm_keepaliver.status())}
+
+
+@app.post("/api/llm-keepalive/stop")
+def api_llm_keepalive_stop() -> dict[str, Any]:
+    """Stop the keepalive pinger immediately (no-op if not running)."""
+    llm_keepaliver.stop()
+    return {"ok": True, "status": _keepalive_status_to_dict(llm_keepaliver.status())}
 
 
 @app.post("/api/process/unload_tts")
@@ -1153,6 +1549,20 @@ if THEMES_DIR.exists():
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+# The example settings file lives at the repo root (so users who clone
+# the repo find it next to ``web_ui_settings.json`` and can `cp` it into
+# place). Mounting the repo root under ``/static-repo/`` lets the
+# dashboard's "Load Example" button fetch it without an extra API hop.
+# Path is namespaced to avoid clashing with the dashboard's own
+# ``/static/`` mount.
+if REPO_ROOT.exists():
+    app.mount(
+        "/static-repo",
+        StaticFiles(directory=str(REPO_ROOT), check_dir=False),
+        name="repo-root",
+    )
 
 
 @app.get("/")

@@ -23,8 +23,30 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
-# Install dependencies on first run (or after a pyproject.toml change).
-uv sync
+# Install dependencies only when the lockfile or pyproject has changed
+# since the last sync. `uv sync` re-resolves the dependency graph every
+# time it runs, and pyproject.toml pins ``torch>=2.4.0`` (no upper bound)
+# so an unconditional sync can pull a different torch + matching NVIDIA
+# wheels on every launch. We only want the resolver to run when the
+# project actually changed -- first clone, after ``git pull``, or after
+# the user edits pyproject/uv.lock by hand.
+NEED_SYNC=1
+if [ -d ".venv" ] && [ -f "uv.lock" ]; then
+    # uv stamps ``uv.lock`` into .venv's metadata on every successful
+    # sync. Compare the stamp against the on-disk lockfile.
+    STAMP_FILE=".venv/.lock-stamp"
+    if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE" 2>/dev/null)" = "$(stat -c %Y uv.lock 2>/dev/null)" ]; then
+        NEED_SYNC=0
+    fi
+fi
+if [ "$NEED_SYNC" = "1" ]; then
+    uv sync
+    # Record the lockfile mtime so the next launch can skip the sync.
+    if [ -f "uv.lock" ]; then
+        mkdir -p .venv
+        stat -c %Y uv.lock > .venv/.lock-stamp 2>/dev/null || true
+    fi
+fi
 
 URL="http://localhost:8050"
 

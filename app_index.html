@@ -195,7 +195,7 @@
         position: relative;
     }
     .feature-block.new::before {
-        content: "NEW in v0.2.0";
+        content: "NEW in v0.3.0";
         position: absolute;
         top: -10px; left: 24px;
         background: var(--accent);
@@ -263,12 +263,13 @@
 
     <section class="hero">
         <h1>speech-to-speech</h1>
-        <p class="tagline">An open, real-time voice agent pipeline with a browser dashboard.<br>Now with Chatterbox voice cloning and 18 cyberpunk themes.</p>
+        <p class="tagline">An open, real-time voice agent pipeline with a browser dashboard.<br>Now with a qwen3-TTS voice library (9 presets + per-language pinning) and 18 cyberpunk themes.</p>
         <div class="badges">
-            <span class="badge green">v0.2.0</span>
+            <span class="badge green">v0.3.0</span>
             <span class="badge cyan">VAD → STT → LLM → TTS</span>
             <span class="badge pink">Realtime WebSocket</span>
             <span class="badge">6 TTS backends</span>
+            <span class="badge">9 qwen3 voices</span>
             <span class="badge">Linux / Windows</span>
         </div>
         <div class="cta-row">
@@ -327,12 +328,41 @@
         </div>
         <div class="card">
             <h4>💾 Save / Reset / Import / Export</h4>
-            <p>Settings live at <code>web_ui_settings.json</code> in the repo root (gitignored). Atomic write — a crash mid-save can't corrupt the file.</p>
+            <p>Settings live at <code>web_ui_settings.json</code> in the repo root (gitignored). Atomic write — a crash mid-save can't corrupt the file. A working example is checked in as <code>web_ui_settings.example.json</code> — import it from the Settings tab to start with a real config instead of bare defaults.</p>
         </div>
         <div class="card">
             <h4>🚀 Start / Stop / Restart / Shutdown</h4>
             <p>One click to start, one click to kill. Shutdown closes both the pipeline and the dashboard. Cross-platform: <code>CREATE_NEW_PROCESS_GROUP</code> on Windows, <code>SIGTERM</code>+<code>SIGKILL</code> on Linux.</p>
         </div>
+    </div>
+
+    <h2>What's new in v0.3.0</h2>
+
+    <div class="feature-block new">
+        <h3>🎭 qwen3-TTS voice library — 9 presets, pick &amp; test</h3>
+        <p>When <code>--tts qwen3</code> is selected, the TTS tab now shows a card grid of the 9 <a href="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" target="_blank" rel="noopener">CustomVoice</a> preset speakers — Vivian, Serena, Uncle_Fu, Dylan, Eric (Chinese), Ryan, Aiden (English), Ono_Anna (Japanese), Sohee (Korean). Each card has a language badge, a sample sentence in that speaker's native language, a <strong>Set active</strong> button, and a <strong>Test</strong> button that synthesizes the sample so you can hear the voice before committing.</p>
+        <p style="color: var(--text-dim); font-size: 0.9rem;">Realtime clients (browser, app, robot) send <code>voice: "alloy"</code> in <code>session.update</code>; qwen3-TTS doesn't recognize OpenAI's voice names, so the dashboard silently ignores the client's <code>voice</code> field and uses whatever you set in <strong>Settings → TTS → Qwen3-TTS → Speaker</strong>. Pick from the dropdown, save, the Realtime pipe speaks in that voice.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>🌍 Per-request language pinning</h3>
+        <p><code>--qwen3-tts-language</code> is now a dropdown with <code>auto</code> plus 10 languages (English, Chinese, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian). The Test modal also has a Language selector pre-filled with the speaker's native language. Pinning the language per-request fixes the cross-lingual artefact where, e.g., sending French text to <code>Ono_Anna</code> would emit French-across-Japanese-voice.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>📚 All 5 qwen3-TTS models in the picker</h3>
+        <p>CustomVoice 1.7B/0.6B (the 9-voice models), Base 1.7B/0.6B (voice cloning via <code>ref_audio</code> + <code>ref_text</code>), and VoiceDesign 1.7B (voice style via <code>instruct</code> text) are all selectable from the dashboard's <code>--qwen3-tts-model-name</code> dropdown.</p>
+        <p style="color: var(--text-dim); font-size: 0.9rem;">Base and VoiceDesign paths need ABI v2 symbols (<code>qt_extract_voice_ref</code>, <code>qt_voice_ref_free</code>) that aren't in the public <code>andimarafioti/qwentts.cpp</code> source. The bundled Pascal <code>qwentts-cpp-python</code> wheel is ABI v1, so picking one of those models renders a yellow info banner explaining the limitation and why the Test button will fail at synthesis time. On RTX 30/40 series GPUs where the upstream wheel ships ABI v2, voice cloning and voice design light up automatically — no dashboard work needed.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>🔧 Realtime voice-override crash fix (Pascal ABI v1)</h3>
+        <p>Without the venv shim, every OpenAI Realtime <code>session.update</code> raised <code>QwenTTSError: Speaker enumeration requires qwentts.cpp ABI v2</code> because the upstream <code>get_supported_speakers()</code> calls into the missing ABI v2 <code>runtime.speaker_names()</code> symbol. <code>web_ui/qwentts_installer.py</code> now patches the venv binding (idempotent, marker comment for traceability) to return <code>[]</code>, which makes the upstream handler's existing "ignore client voice, use configured" branch fire. The configured <code>--qwen3-tts-speaker</code> wins. Shim is reapplied automatically on every <code>uv sync</code> via the installer.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>📥 Bundled Pascal SASS wheel + one-click install</h3>
+        <p>The Pascal (<code>sm_61</code>) build of <code>qwentts-cpp-python</code> (126 MB) is checked into <code>web_ui/wheels/</code> so the dashboard can install it without a network round-trip. The installer runs once before pipeline start; on non-Pascal GPUs it falls through to the upstream PyPI wheel as before.</p>
     </div>
 
     <h2>What's new in v0.2.0</h2>
@@ -381,14 +411,20 @@ start_web_ui.bat</code></pre>
     <table>
         <tr><th>Path</th><th>What</th></tr>
         <tr><td><code>web_ui/</code></td><td>The browser dashboard (FastAPI + vanilla JS, no build step)</td></tr>
-        <tr><td><code>web_ui/static/</code></td><td>HTML, CSS, theme files, voice-library UI module</td></tr>
-        <tr><td><code>web_ui/Guide.md</code></td><td>The in-app walkthrough (Quickstart, Ollama, common issues)</td></tr>
-        <tr><td><code>web_ui/voice_library.py</code></td><td>On-disk <code>voices/&lt;name&gt;.pt</code> library: list / clone / delete / test</td></tr>
+        <tr><td><code>web_ui/static/</code></td><td>HTML, CSS, theme files, voice-library UI modules (<code>voice_library_ui.js</code>, <code>qwen3_voice_library_ui.js</code>)</td></tr>
+        <tr><td><code>web_ui/static/qwen3_models.json</code></td><td>All 5 qwen3-TTS model IDs with variant metadata + ABI v2 flags</td></tr>
+        <tr><td><code>web_ui/static/field_choices.json</code></td><td>Curated dropdown values for plain-<code>str</code> fields (devices, dtypes, voice names, languages)</td></tr>
+        <tr><td><code>web_ui/Guide.md</code></td><td>The in-app walkthrough (Quickstart, Ollama, qwen3-TTS troubleshooting, common issues)</td></tr>
+        <tr><td><code>web_ui/voice_library.py</code></td><td>Chatterbox on-disk <code>voices/&lt;name&gt;.pt</code> library: list / clone / delete / test</td></tr>
+        <tr><td><code>web_ui/qwentts_voice_library.py</code></td><td>qwen3-TTS preset library + reference voices + WAV test synthesis</td></tr>
+        <tr><td><code>web_ui/qwentts_installer.py</code></td><td>Auto-installs the bundled Pascal wheel on <code>sm_61</code> GPUs and patches the venv binding for the ABI v1 realtime crash</td></tr>
+        <tr><td><code>web_ui/wheels/</code></td><td>Bundled CUDA wheels (currently: <code>qwentts_cpp_python-0.3.1</code> for Pascal <code>sm_61</code>)</td></tr>
         <tr><td><code>demo/</code></td><td>The Reachy Mini conversation UI (orb, settings, tools, WebRTC)</td></tr>
-        <tr><td><code>src/speech_to_speech/TTS/</code></td><td>All six TTS backends, including the new <code>chatterbox_tts_handler.py</code></td></tr>
+        <tr><td><code>src/speech_to_speech/TTS/</code></td><td>All six TTS backends, including <code>chatterbox_tts_handler.py</code> and <code>qwen3_tts_handler.py</code></td></tr>
         <tr><td><code>src/speech_to_speech/api/openai_realtime/</code></td><td>The Realtime WebSocket / WebRTC server</td></tr>
-        <tr><td><code>voices/</code></td><td>Cloned voice embeddings (gitignored, created on first clone)</td></tr>
-        <tr><td><code>web_ui_settings.json</code></td><td>Saved dashboard settings (gitignored, atomic write)</td></tr>
+        <tr><td><code>voices/</code></td><td>Cloned Chatterbox + uploaded qwen3 reference audio (gitignored, created on first upload)</td></tr>
+        <tr><td><code>web_ui_settings.example.json</code></td><td>Working settings example (Ollama + qwen3-TTS + parakeet STT). Import from Settings tab.</td></tr>
+<tr><td><code>web_ui_settings.json</code></td><td>Saved dashboard settings (gitignored, atomic write, created on first Save)</td></tr>
     </table>
 
     <h2>Try it with the Reachy Mini conversation app</h2>
@@ -411,7 +447,7 @@ uv run uvicorn --app-dir demo server:app --port 7860
             <span>·</span>
             <a href="https://huggingface.co/spaces/ArtFix0/speech-to-speech-dashboard">HF Space</a>
         </div>
-        <p style="margin-top: 12px;">Apache 2.0 · built on <a href="https://github.com/huggingface/speech-to-speech">huggingface/speech-to-speech</a> · Chatterbox TTS by <a href="https://www.resemble.ai/">Resemble AI</a></p>
+        <p style="margin-top: 12px;">Apache 2.0 · built on <a href="https://github.com/huggingface/speech-to-speech">huggingface/speech-to-speech</a> · qwen3-TTS by <a href="https://huggingface.co/Qwen">Qwen</a> · Chatterbox TTS by <a href="https://www.resemble.ai/">Resemble AI</a></p>
     </footer>
 
 </div>

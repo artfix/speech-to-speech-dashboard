@@ -7,6 +7,85 @@ own release cadence.
 
 ## [Unreleased] — Web dashboard
 
+### 0.3.0 — 2026-07-27
+
+#### Added
+
+- **qwen3-TTS voice library in the dashboard.** Card grid of the 9
+  CustomVoice preset speakers (Vivian, Serena, Uncle_Fu, Dylan, Eric,
+  Ryan, Aiden, Ono_Anna, Sohee) with native-language badges, sample
+  sentences, "Set active" and "Test" buttons. Mirrors the Chatterbox
+  voice library UX. New files: `web_ui/static/qwen3_voice_library_ui.js`,
+  `web_ui/qwentts_voice_library.py`.
+- **qwen3-TTS dropdowns for speaker and language.** `--qwen3-tts-speaker`
+  is now a `<select>` with the 9 presets; `--qwen3-tts-language` lists
+  `auto` + 10 languages (english, chinese, japanese, korean, german,
+  french, russian, portuguese, spanish, italian). Pinning the language
+  per-request fixes the cross-lingual artefact (e.g. French text
+  sent to `Ono_Anna` emitting French-across-Japanese-voice).
+  Device / dtype / attn-implementation also get curated dropdowns.
+  Values live in `web_ui/static/field_choices.json`.
+- **All 5 qwen3-TTS models in the picker.** `qwen3_models.json` lists
+  CustomVoice 1.7B/0.6B, Base 1.7B/0.6B, VoiceDesign 1.7B with variant
+  metadata and `needs_abi_v2` flags. The dashboard shows a yellow
+  info banner when a Base or VoiceDesign model is selected.
+- **Reference voices section + upload widget.** Lists uploaded files
+  under `voices/qwen3_refs/` with size + mtime, "Use as
+  `--qwen3-tts-ref-audio`" and "Test" actions; header reads "require
+  ABI v2 — synthesis will fail" in red.
+- **Voice Library Test modal language selector.** Pre-filled with the
+  speaker's native language (or the dashboard's pinned
+  `--qwen3-tts-language` if set to a non-`auto` value).
+- **Test-while-running guard.** When the pipeline is running, the qwen3
+  voice Test button pops a modal explaining the OOM and offering
+  one-click "Stop pipeline & test" (force-refreshes status, waits
+  800 ms for CUDA context release, retries).
+- **Bundled Pascal wheel** `qwentts_cpp_python-0.3.1-py3-none-linux_x86_64.whl`
+  (126 MB) in `web_ui/wheels/`. Re-included in `.gitignore` per the
+  `!web_ui/wheels/` rule.
+- **Venv shim patcher** in `web_ui/qwentts_installer.py`
+  (`_patch_faster_qwen3_tts_if_needed`). The Pascal wheel is ABI v1
+  only — the upstream `get_supported_speakers()` calls into the
+  missing ABI v2 `runtime.speaker_names()` symbol, raising
+  `QwenTTSError: Speaker enumeration requires ABI v2` on every OpenAI
+  Realtime `session.update`. The shim rewrites the method body to
+  `return []` (idempotent, marker comment), causing the upstream
+  handler's existing "ignore client voice, use configured" branch
+  to fire — the configured `--qwen3-tts-speaker` wins. Reapplied
+  automatically on every `uv sync` via the installer.
+- **Five new endpoints** in `web_ui/server.py`: `GET /api/qwen3/voices`,
+  `POST /api/qwen3/voice/{speaker}/set-active`,
+  `POST /api/qwen3/voice/test`,
+  `DELETE /api/qwen3_ref_audio/{name}`,
+  `GET /api/qwen3_ref_audio/list`.
+- **Example settings file** `web_ui_settings.example.json` — a real
+  working configuration (Ollama + qwen3-TTS + parakeet STT, realtime
+  mode). The Settings tab's Import button can load it as a starting
+  point. The `192.168.1.2` IP and `Ono_Anna` voice pick are the
+  author's actual working config — no secrets exposed.
+- **Three new Guide.md troubleshooting entries**: qwen3 voice selection
+  in Realtime clients, ABI v2 limitation, model picker guidance.
+
+#### Changed
+
+- `web_ui/static/app.js` — qwen3 voice library mount, ABI v2 banner,
+  ref-audio upload widget.
+- `web_ui/static/index.html` — loads `qwen3_voice_library_ui.js` before
+  `app.js`.
+- `web_ui/static/qwen3_models.json` — version 1 → 2.
+- `web_ui/static/field_choices.json` — new file with curated dropdown
+  values for plain-`str` fields.
+- `web_ui/settings_schema.py` — 3-line patch teaching schema
+  introspection about the new curated fields.
+- `web_ui/process_manager.py` — small refactor plus a new
+  `_install_qwentts_pascal_wheel` step that runs once before the
+  pipeline subprocess starts (idempotent).
+
+#### Hard-constraint preservation
+
+- **Zero changes to `src/speech_to_speech/`.** Confirmed by
+  `git diff --stat main^..main -- src/` returning empty.
+
 ### 0.1.3 — 2026-07-23
 
 #### Added

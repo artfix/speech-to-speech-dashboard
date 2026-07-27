@@ -231,4 +231,18 @@ cover/
 uv.lock
 
 # Web UI saved settings (created when the user clicks "Save Settings" in the dashboard)
-web_ui_settings.jsonvoices/
+web_ui_settings.json
+voices/
+
+# Example settings file — checked into git as a working reference. Users can
+# import it from the Settings tab (Import JSON → pick web_ui_settings.example.json)
+# to start with a real configuration instead of bare defaults.
+# Uncomment to ignore if you'd rather ship without an example:
+# web_ui_settings.example.json
+
+# Pascal (sm_61) qwentts-cpp-python wheel. The wheel is too large for HF
+# Spaces (10 MiB cap on regular-git files), so it lives in a separate HF
+# Dataset (ArtFix0/speech-to-speech-wheels). The installer downloads it on
+# first need into ``web_ui/wheels/`` and the directory stays ignored so the
+# download doesn't accidentally end up in git.
+web_ui/wheels/

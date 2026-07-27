@@ -24,12 +24,25 @@ if errorlevel 1 (
     exit /b 1
 )
 
-uv sync
-if errorlevel 1 (
-    echo.
-    echo ERROR: 'uv sync' failed. See the output above.
-    pause
-    exit /b 1
+REM Install dependencies only when the lockfile has changed since last
+REM sync. pyproject.toml pins ``torch>=2.4.0`` (no upper bound), so an
+REM unconditional uv sync on every launch can pull a different torch +
+REM different NVIDIA wheels each time. The .venv\Scripts\.lock-stamp
+REM file records the last-seen uv.lock mtime; we skip uv sync when it
+REM matches. (Windows shell can't reliably read mtime, so we use a
+REM portable hash of the lockfile contents instead.)
+set "STAMP=.venv\Scripts\.lock-stamp"
+set "NEED_SYNC=1"
+if exist "%STAMP%" if exist "uv.lock" (
+    REM hash the lockfile -- if the stamp's hash matches, lockfile is unchanged.
+    powershell -NoProfile -Command "exit ('{0}' -eq (Get-FileHash -Algorithm SHA256 'uv.lock' -ErrorAction SilentlyContinue).Hash)" >nul 2>&1
+    if not errorlevel 1 set "NEED_SYNC=0"
+)
+if "%NEED_SYNC%"=="1" (
+    uv sync
+    if exist "uv.lock" (
+        powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'uv.lock').Hash | Out-File -Encoding ascii '%STAMP%'" >nul 2>&1
+    )
 )
 
 echo.

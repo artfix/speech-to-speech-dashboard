@@ -1,0 +1,38 @@
+{
+  "_comment": "Curated value lists for fields whose Python annotation is plain `str` (so the schema introspection in web_ui/settings_schema.py:_field_choices() can't pull the allowed values from the type). Each value here is verified against either the help text in src/speech_to_speech/arguments_classes/<backend>.py or the upstream docs (kokoro README, pocket-tts voice list, Qwen3-TTS CustomVoice model card). Custom values remain possible via the 'Custom (type your own)' sentinel option in the rendered <select>.",
+  "version": 1,
+  "choices": {
+    "--qwen3-tts-device": ["auto", "cuda", "cpu", "mps"],
+    "--qwen3-tts-dtype": ["auto", "float16", "bfloat16", "float32"],
+    "--qwen3-tts-attn-implementation": ["eager", "flash_attention_2", "sdpa"],
+    "--qwen3-tts-speaker": [
+      "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee"
+    ],
+    "--qwen3-tts-language": [
+      "auto", "english", "chinese", "japanese", "korean", "german", "french", "russian", "portuguese", "spanish", "italian"
+    ],
+    "--pocket-tts-device": ["cpu", "cuda", "mps"],
+    "--pocket-tts-voice": [
+      "alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"
+    ],
+    "--kokoro-device": ["auto", "cuda", "cpu", "mps"],
+    "--kokoro-lang-code": [
+      "a", "b", "e", "f", "h", "i", "j", "p", "s", "z"
+    ],
+    "--chat-tts-device": ["cuda", "cpu"],
+    "--facebook-mms-device": ["cuda", "cpu"],
+    "--facebook-mms-torch-dtype": ["float16", "bfloat16", "float32"],
+    "--llm-torch-dtype": ["float16", "bfloat16", "float32"],
+    "--stt-torch-dtype": ["float16", "bfloat16", "float32"],
+    "--llm-keepalive": [
+      "0",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "12h",
+      "-1"
+    ]
+  }
+}
