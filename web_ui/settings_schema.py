@@ -105,6 +105,11 @@ _TEXTAREA_FIELDS = {
     "init_chat_prompt",
     "qwen3_tts_ref_text",
     "qwen3_tts_instruct",
+    # Warmup messages are user-editable personality / neutral warmup text.
+    # Single-line inputs make long personality prompts painful to edit; a
+    # vertically-resizable textarea matches the init_chat_prompt UX.
+    "responses_api_warmup_system_prompt",
+    "responses_api_warmup_user_prompt",
 }
 
 
