@@ -139,6 +139,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         num_ctx: Optional[int] = None,
         request_timeout_s: float = 20.0,
         warmup_timeout_s: float = 180.0,
+        warmup_system_prompt: Optional[str] = None,
+        warmup_user_prompt: Optional[str] = None,
         stream_batch_sentences: int = 3,
         enable_lang_prompt: bool = False,
         compact_history: bool = False,
@@ -165,6 +167,16 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             self.warmup_timeout_s,
             connect=min(10.0, self.warmup_timeout_s),
         )
+        # Warmup messages are user-controlled via the dashboard. The dashboard
+        # field defaults to "." (a neutral single character) so the warmup
+        # request doesn't prime the model with a system persona that conflicts
+        # with the personality set in the conversation app. The user can edit
+        # either field to whatever they want — the pipeline passes them through
+        # verbatim. There is no hidden fallback: if the user sets neither, the
+        # CLI args carry the dashboard default ("."); if the user sets them
+        # explicitly, those values are used.
+        self.warmup_system_prompt = warmup_system_prompt
+        self.warmup_user_prompt = warmup_user_prompt
 
         self.user_role = user_role
         self.client = OpenAI(api_key=api_key, base_url=base_url)

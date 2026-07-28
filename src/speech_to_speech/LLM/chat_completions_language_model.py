@@ -98,8 +98,8 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         self.client.with_options(max_retries=WARMUP_MAX_RETRIES).chat.completions.create(
             model=self.model_name,
             messages=[
-                {"role": "system", "content": "You are a helpful assistant"},
-                {"role": "user", "content": "Hello"},
+                {"role": "system", "content": self.warmup_system_prompt},
+                {"role": "user", "content": self.warmup_user_prompt},
             ],
             extra_body=self._extra_body,
             timeout=self.warmup_timeout,

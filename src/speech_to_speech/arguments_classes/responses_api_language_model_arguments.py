@@ -50,3 +50,22 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
             "you're loading a very large model on a slow LAN. Default is 180.0."
         },
     )
+    responses_api_warmup_system_prompt: Optional[str] = field(
+        default=".",
+        metadata={
+            "help": "System message sent on the pipeline's startup warmup request. The warmup "
+            "exists only to load the model into VRAM before the first real chat turn; its reply "
+            "is discarded. Set this to a neutral single character (the default) so the warmup "
+            "doesn't prime the model with a system persona that conflicts with the user-facing "
+            "personality configured elsewhere. Use a longer string if your model requires a "
+            "non-empty system message. Default is '.'."
+        },
+    )
+    responses_api_warmup_user_prompt: Optional[str] = field(
+        default=".",
+        metadata={
+            "help": "User message sent on the pipeline's startup warmup request. Same purpose "
+            "as --responses-api-warmup-system-prompt: keep it neutral so the warmup doesn't "
+            "shape the model's persona for subsequent real chat turns. Default is '.'."
+        },
+    )

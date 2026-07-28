@@ -45,9 +45,13 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
                 {
                     "type": "message",
                     "role": "system",
-                    "content": [{"type": "input_text", "text": "You are a helpful assistant"}],
+                    "content": [{"type": "input_text", "text": self.warmup_system_prompt}],
                 },
-                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]},
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": self.warmup_user_prompt}],
+                },
             ],
             timeout=self.warmup_timeout,
         )
