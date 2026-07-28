@@ -529,7 +529,15 @@ def get_defaults() -> dict[str, Any]:
     additional environment variables. These two are not introspected from
     argument classes -- they live in the settings file.
     """
-    out: dict[str, Any] = {"theme": "cyberpunk-neon", "env": [], "--llm-keepalive": "0"}
+    out: dict[str, Any] = {
+        "theme": "cyberpunk-neon",
+        "env": [],
+        "--llm-keepalive": "0",
+        # Dashboard-only. Max seconds the dashboard will wait for Ollama
+        # to load a model into VRAM during the one-shot warmup before
+        # giving up. 0.3.2+; the upstream pipeline has no such setting.
+        "--ollama-load-timeout-seconds": 60,
+    }
     for group in get_full_schema()["groups"]:
         for f in group["fields"]:
             if f["default"] is not None or f["type"] in ("string", "optional_string", "enum"):
@@ -548,10 +556,11 @@ def get_defaults() -> dict[str, Any]:
 
 # Fields the user should never forward to the pipeline as CLI args.
 # ``theme`` controls the UI; ``env`` is passed via the subprocess environment.
-# ``--llm-keepalive`` is a dashboard-only Ollama keepalive setting that the
-# dashboard's background pinger consumes — it can't be forwarded as a CLI
-# flag because the upstream pipeline has no such argument.
-_NON_FORWARDED = {"theme", "env", "--llm-keepalive"}
+# ``--llm-keepalive`` and ``--ollama-load-timeout-seconds`` are dashboard-
+# only Ollama warmup settings that the dashboard's one-shot keepalive
+# consumes — they can't be forwarded as CLI flags because the upstream
+# pipeline has no such arguments.
+_NON_FORWARDED = {"theme", "env", "--llm-keepalive", "--ollama-load-timeout-seconds"}
 
 
 # CLI flags that only apply to specific backends. If the user picks a

@@ -1,5 +1,11 @@
 """Background pinger that keeps an Ollama model loaded between user turns.
 
+DEPRECATED since 0.3.2 — replaced by the one-shot keep_alive request that
+``web_ui.server`` fires at Save / Start time (see
+``POST /api/ollama/keepalive`` in ``server.py``). The pinger is kept in
+place for rollback: a one-line change in ``server.py`` is enough to
+re-enable it. No new callers should import from this module.
+
 Ollama unloads a model from VRAM after ``keep_alive`` of inactivity (default
 5 minutes). For a low-latency voice-agent pipeline this is fatal: the next
 user utterance after a 5-minute pause would pay the full ~20s reload cost

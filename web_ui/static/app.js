@@ -33,6 +33,19 @@ const state = {
     // qwen3Models: loaded from /static/field_choices.json. If null,
     // every free-form `str` field renders as a plain text input.
     fieldChoices: null,
+    // Ollama model list, fetched from GET /api/ollama/models. Shape:
+    //   { models: [{id: "gpt-oss:20b"}, ...], error: null | "<reason>" }
+    // null until the first fetch. The model-name field becomes a <select>
+    // when this is populated AND the LLM backend is OpenAI-compat AND the
+    // base URL looks like Ollama. Errors fall back to the free-text input
+    // silently — we never toast a "could not list models" failure.
+    ollamaModels: null,
+    // The base URL the Ollama list was fetched against. Used to dedupe
+    // re-renders when the user types in the base URL field.
+    ollamaBaseUrlAtFetch: '',
+    // In-flight Ollama fetch, so the debounce doesn't fire N requests
+    // in a row while the user is still typing.
+    ollamaFetchInFlight: null,
 };
 
 // ---- Utility ---------------------------------------------------------
@@ -110,6 +123,98 @@ async function api(path, opts = {}) {
 const getJSON = (path) => api(path);
 const postJSON = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
 
+// ---- Ollama model discovery (0.3.2+) ----------------------------------
+// Mirrors the URL heuristic in web_ui/server.py:_looks_like_ollama_url:
+// matches Ollama's default port (11434) or an explicit "/ollama" in the
+// path. Anything else (api.openai.com, a custom vLLM endpoint, …) keeps
+// the model field as a free-text input so we don't lock out non-Ollama
+// users.
+function _looksLikeOllamaUrl(url) {
+    const s = String(url || '').trim().toLowerCase();
+    if (!s) return false;
+    return s.includes(':11434') || s.includes('/ollama');
+}
+
+// Debounce so a user still typing the URL doesn't fire one fetch per
+// keystroke. 400 ms is fast enough to feel instant and slow enough to
+// coalesce normal typing bursts.
+let _ollamaFetchDebounceTimer = null;
+function scheduleOllamaFetch(baseUrl, apiKey) {
+    if (_ollamaFetchDebounceTimer) clearTimeout(_ollamaFetchDebounceTimer);
+    _ollamaFetchDebounceTimer = setTimeout(() => {
+        _ollamaFetchDebounceTimer = null;
+        fetchOllamaModels(baseUrl, apiKey);
+    }, 400);
+}
+
+async function fetchOllamaModels(baseUrl, apiKey) {
+    // Don't refetch if the URL hasn't changed since the last successful
+    // fetch. The base URL is the only "identity" of an Ollama server we
+    // care about — re-keying by model name would be wrong (the user can
+    // change the model without re-fetching the list).
+    const url = String(baseUrl || '').trim();
+    if (!url) {
+        state.ollamaModels = null;
+        state.ollamaBaseUrlAtFetch = '';
+        state.ollamaFetchInFlight = null;
+        return;
+    }
+    if (state.ollamaBaseUrlAtFetch === url && state.ollamaModels && !state.ollamaModels.error) {
+        return; // already have a good list for this URL
+    }
+    // Dedup in-flight fetches for the same URL.
+    if (state.ollamaFetchInFlight && state.ollamaFetchInFlight.url === url) {
+        return;
+    }
+    const key = String(apiKey || '').trim();
+    const params = new URLSearchParams({ base_url: url });
+    if (key) params.set('api_key', key);
+    const promise = getJSON('/api/ollama/models?' + params.toString())
+        .then((j) => {
+            state.ollamaModels = j || { models: [], error: 'no response' };
+            state.ollamaBaseUrlAtFetch = url;
+        })
+        .catch((e) => {
+            // Silent fallback — the model field will render as free-text.
+            state.ollamaModels = { models: [], error: e.message || 'fetch failed' };
+            state.ollamaBaseUrlAtFetch = url;
+        })
+        .finally(() => {
+            if (state.ollamaFetchInFlight && state.ollamaFetchInFlight.url === url) {
+                state.ollamaFetchInFlight = null;
+            }
+            // The initial page-load fetch races the first render: the
+            // LLM tab is mounted before this fetch resolves, so
+            // renderField sees state.ollamaModels === null and falls
+            // back to a free-text input. Re-render the LLM tab once
+            // the list is in so the dropdown appears the next time
+            // the user visits the LLM tab. We re-render
+            // unconditionally (not only when LLM is the active tab) —
+            // tabs are rendered ONCE in renderAll() and not re-painted
+            // on tab-switch, so we have to refresh the LLM tab here
+            // for the dropdown to ever appear, regardless of which
+            // tab the user happens to be on when the fetch resolves.
+            //
+            // We clear the tab's existing children first because
+            // renderSettingsTab appends rather than replaces — without
+            // this we'd end up with two copies of the LLM tab
+            // stacked, and the original (free-text) one would still
+            // be at the top.
+            if (state.schema && state.ollamaModels && !state.ollamaModels.error
+                && Array.isArray(state.ollamaModels.models)
+                && state.ollamaModels.models.length > 0) {
+                const llmTab = document.getElementById('tab-llm');
+                if (llmTab) {
+                    llmTab.replaceChildren();
+                    renderSettingsTab(llmTab, 'llm');
+                    applyDisabledStates();
+                }
+            }
+        });
+    state.ollamaFetchInFlight = { url, promise };
+    return promise;
+}
+
 // ---- Initial load ----------------------------------------------------
 
 async function init() {
@@ -146,6 +251,11 @@ async function init() {
                 }
             }
         } catch (_) { /* offline / missing — fallback */ }
+        // Ollama model list — only fetched if the user has configured a
+        // base URL that looks like Ollama. Best-effort, silent fallback to
+        // free-text on any failure (offline, network, 4xx, 5xx).
+        // MUST run AFTER state.settings is assigned below — otherwise the
+        // URL is read as undefined and the fetch never fires. (Fix 0.3.2.)
         state.schema = schema;
         state.defaults = settingsR.settings;
         state.settings = { ...settingsR.settings };
@@ -153,6 +263,10 @@ async function init() {
         state.savedPath = settingsR.path;
         state.themes = themesR.themes;
         state.version = versionR.version;
+        const initialBaseUrl = String(state.settings['--responses-api-base-url'] || '');
+        if (initialBaseUrl) {
+            fetchOllamaModels(initialBaseUrl, state.settings['--responses-api-api-key']);
+        }
         state.currentTheme = state.settings.theme || 'cyberpunk-neon';
         applyTheme(state.currentTheme);
         const verEl = document.getElementById('app-version');
@@ -351,6 +465,10 @@ function renderSettingsTab(tab, groupId) {
         el('h1', { class: 'tab-title' }, group.title),
         el('div', { class: 'tab-subtitle' }, group.description),
     ]));
+    // 0.3.2+: temporary diagnostic badge on the LLM tab so we can see
+    // at a glance whether the Ollama model fetch has landed. Will be
+    // removed once the dropdown is reliably rendering. (Diagnostic, no
+    // behaviour change.)
     const grid = el('div', { class: 'form-grid' });
     for (const f of group.fields) {
         grid.appendChild(renderField(f, group.title));
@@ -373,7 +491,14 @@ function renderSettingsTab(tab, groupId) {
     // going through the full renderField() path.
     if (groupId === 'llm') {
         const grid2 = tab.querySelector('.form-grid');
-        if (grid2) grid2.appendChild(renderKeepaliveField());
+        if (grid2) {
+            grid2.appendChild(renderKeepaliveField());
+            // 0.3.2+: dashboard-only max-wait for the one-shot Ollama
+            // warmup. Default 60 s; users on a slow LAN loading a 70 B
+            // model can bump it. Same hand-rendered pattern as
+            // --llm-keepalive (it's not in the introspected schema).
+            grid2.appendChild(renderOllamaLoadTimeoutField());
+        }
     }
     // The voice library lives inside the TTS tab. It only renders when the
     // user has selected the chatterbox backend, so it sits below the
@@ -458,6 +583,78 @@ function renderField(f, parentTitle) {
 
     let input;
     const val = state.settings[f.flag];
+    // ---- Ollama model dropdown (0.3.2+) --------------------------------
+    // The --model-name field appears once per LLM-backend subgroup. For
+    // the chat-completions / responses-api subgroups, when the base URL
+    // looks like Ollama AND the Ollama model list is populated, render
+    // a <select> instead of a free-text input. The Custom… option
+    // (mirrors the qwen3 / tryCuratedSelect pattern) lets the user type
+    // any model name not in the list, so saved settings on remote
+    // Ollama servers without a known list still round-trip correctly.
+    if (
+        f.flag === '--model-name'
+        && f.ui !== 'checkbox'
+        && _looksLikeOllamaUrl(state.settings['--responses-api-base-url'])
+        && state.ollamaModels
+        && Array.isArray(state.ollamaModels.models)
+        && state.ollamaModels.models.length > 0
+        && !state.ollamaModels.error
+    ) {
+        const models = state.ollamaModels.models;
+        const curVal = val == null ? '' : String(val);
+        const isCurated = models.some((m) => m.id === curVal);
+        const ollamaCustomSentinel = '__ollama_custom__';
+        const sel = el('select', {
+            class: 'field-select',
+            id: fieldId,
+            onchange: (e) => {
+                const v = e.target.value;
+                if (v === ollamaCustomSentinel) {
+                    // Swap to free-text — same escape-hatch the qwen3
+                    // picker uses. The Custom option is a UI affordance,
+                    // not a stored value: the user's typed text is what
+                    // ends up in state.settings and in the settings file.
+                    const freeText = el('input', {
+                        class: 'field-input',
+                        id: fieldId,
+                        type: 'text',
+                        placeholder: 'model-name',
+                        oninput: (ev) => {
+                            state.settings[f.flag] = ev.target.value;
+                            applyDisabledStates();
+                        },
+                    });
+                    // Pre-fill with the current curated value so the user
+                    // can tweak it; if the saved value was already custom,
+                    // keep it.
+                    freeText.value = isCurated ? curVal : (curVal || '');
+                    sel.replaceWith(freeText);
+                    freeText.focus();
+                    return;
+                }
+                state.settings[f.flag] = v;
+                applyDisabledStates();
+            },
+        });
+        for (const m of models) {
+            // Ollama's /v1/models returns {"id": "gpt-oss:20b", ...} —
+            // the id IS the model name. No separate label needed.
+            sel.appendChild(el('option', { value: m.id }, m.id));
+        }
+        sel.appendChild(el('option', { value: ollamaCustomSentinel }, 'Custom (type your own)'));
+        if (isCurated) {
+            sel.value = curVal;
+        } else if (curVal) {
+            // Saved value isn't in the current Ollama list — preserve it
+            // by defaulting to Custom so the user sees their value rather
+            // than us silently clamping to the first model.
+            sel.value = ollamaCustomSentinel;
+        }
+        // Fall through to the standard field-mount path so ``label``,
+        // ``help`` and the ``.field`` wrapper are all built the same way
+        // as every other field. Same pattern as the qwen3 branch above.
+        input = sel;
+    }
     // Curated dropdown for fields whose Python annotation is plain `str`
     // (so the schema can't introspect allowed values) but we have a known
     // short whitelist. Loaded from /static/field_choices.json at startup;
@@ -643,10 +840,16 @@ function renderField(f, parentTitle) {
         // voice name, language code). See web_ui/static/field_choices.json
         // for the source of truth; missing entries fall through to the
         // standard text input silently.
-        const curated = tryCuratedSelect();
+        // If an earlier branch (e.g. the Ollama model dropdown at L601)
+        // already produced the input element, keep it. Without this guard
+        // the Ollama <select> built above would be silently discarded and
+        // replaced by a brand-new <input type="text">, defeating the
+        // purpose of the dropdown.
+        const curated = input ? null : tryCuratedSelect();
         if (curated) {
             input = curated;
-        } else {
+        } else if (!input) {
+            const isOllamaBaseUrl = f.flag === '--responses-api-base-url';
             input = el('input', {
                 class: 'field-input',
                 id: fieldId,
@@ -660,6 +863,42 @@ function renderField(f, parentTitle) {
                         state.settings[f.flag] = v;
                     }
                     applyDisabledStates();
+                    // 0.3.2+: when the user edits the Ollama base URL,
+                    // debounce-refresh the model dropdown so it tracks
+                    // whatever server they typed. Re-render so the
+                    // --model-name field swaps in/out of dropdown mode
+                    // based on whether the new URL looks like Ollama.
+                    if (isOllamaBaseUrl) {
+                        if (_looksLikeOllamaUrl(v)) {
+                            scheduleOllamaFetch(v, state.settings['--responses-api-api-key']);
+                        } else {
+                            // Non-Ollama URL — clear the cache so the
+                            // dropdown disappears on the next render.
+                            state.ollamaModels = null;
+                            state.ollamaBaseUrlAtFetch = '';
+                        }
+                        // Re-render the active settings tab so the
+                        // model field re-evaluates the dropdown
+                        // decision. Wait one tick so the debounced
+                        // Ollama fetch (400 ms) has time to land;
+                        // the second pass will pick up the populated
+                        // ollamaModels state. We only re-render the
+                        // visible subgroup to keep input focus +
+                        // scroll position elsewhere. Clear the tab's
+                        // existing children first so we don't double-
+                        // render.
+                        const activeTab = $('.tab.active');
+                        if (activeTab && activeTab.dataset && activeTab.dataset.tab) {
+                            const tabId = activeTab.dataset.tab;
+                            setTimeout(() => {
+                                if (tabId === 'llm') {
+                                    activeTab.replaceChildren();
+                                    renderSettingsTab(activeTab, 'llm');
+                                    applyDisabledStates();
+                                }
+                            }, 500);
+                        }
+                    }
                 }
             });
             input.value = val == null ? '' : String(val);
@@ -880,6 +1119,106 @@ function renderKeepaliveField() {
         sel.value = customSentinel;
     }
 
+    const help = el('div', { class: 'field-help', id: `help-${flag}` }, helpText);
+    return el('div', { class: 'field full' }, [label, sel, help]);
+}
+
+// 0.3.2+: Ollama model dropdown now renders correctly without a
+// debug badge — see the Ollama branch in renderField() (L601).
+
+
+// next to --llm-keepalive on the LLM tab; the upstream pipeline has no
+// such flag, so the schema introspection doesn't know about it. A
+// plain number input with a curated shortcut list keeps the UI
+// compact without giving up the ability to type any value in
+// [5, 600].
+const _OLLAMA_TIMEOUT_PRESETS = [
+    { value: 30,  label: '30 s' },
+    { value: 60,  label: '60 s (default)' },
+    { value: 120, label: '2 min' },
+    { value: 300, label: '5 min' },
+    { value: 600, label: '10 min (max)' },
+];
+function renderOllamaLoadTimeoutField() {
+    const flag = '--ollama-load-timeout-seconds';
+    const fieldId = `f-${flag}`;
+    const hoverPreview =
+        'Max seconds the dashboard waits for Ollama to load the LLM model ' +
+        'into VRAM during the one-shot warmup. Bump this up on a slow LAN ' +
+        'or for very large models; 60 s covers a 20 B model on most links.';
+    const helpText =
+        'How long the dashboard will wait for Ollama to finish loading the ' +
+        'LLM model into VRAM during the one-shot warmup (fired when you ' +
+        'click Save Settings or Start Pipeline). A cold load of a 20 B model ' +
+        'over a LAN typically takes 30-60 s; very large models or slow links ' +
+        'may need more. Allowed range: 5 - 600 seconds. Clamped by the ' +
+        'dashboard on save; values outside the range are silently clipped.';
+    const label = el('label', { class: 'field-label', for: fieldId }, [
+        flag,
+        el('span', { class: 'field-flag' }, ''),
+        el('button', {
+            type: 'button', class: 'help-btn', title: hoverPreview,
+            onclick: (e) => {
+                e.preventDefault();
+                const field = e.currentTarget.closest('.field');
+                const help = field && field.querySelector('.field-help');
+                if (help) help.classList.toggle('visible');
+            },
+        }, '?'),
+    ]);
+    // Coerce whatever's in state.settings to a number; fall back to 60.
+    let curVal = parseInt(state.settings[flag], 10);
+    if (!Number.isFinite(curVal) || curVal <= 0) curVal = 60;
+    const isCurated = _OLLAMA_TIMEOUT_PRESETS.some((c) => c.value === curVal);
+    const customSentinel = '__custom__';
+    const sel = el('select', {
+        class: 'field-select', id: fieldId,
+        onchange: (e) => {
+            const v = e.target.value;
+            if (v === customSentinel) {
+                // Swap to a free-text numeric input so the user can
+                // type any value in the allowed range. The number
+                // input keeps them honest — letters / decimals out.
+                const freeText = el('input', {
+                    class: 'field-input', id: fieldId, type: 'number',
+                    min: '5', max: '600', step: '5',
+                    placeholder: 'e.g. 90',
+                    oninput: (ev) => {
+                        const n = parseInt(ev.target.value, 10);
+                        // Update state on every keystroke; the endpoint
+                        // clamps to [5, 600] on its own.
+                        state.settings[flag] = Number.isFinite(n) ? n : 60;
+                        applyDisabledStates();
+                    },
+                });
+                // Pre-fill with the current value (whether curated or
+                // already-custom) so the user can tweak it.
+                freeText.value = String(curVal);
+                state.settings[flag] = curVal;
+                sel.replaceWith(freeText);
+                freeText.focus();
+                freeText.select();
+                return;
+            }
+            const n = parseInt(v, 10);
+            state.settings[flag] = Number.isFinite(n) ? n : 60;
+            applyDisabledStates();
+        },
+    });
+    for (const c of _OLLAMA_TIMEOUT_PRESETS) {
+        sel.appendChild(el('option', { value: String(c.value) }, c.label));
+    }
+    sel.appendChild(el('option', { value: customSentinel }, 'Custom (type your own)'));
+    if (isCurated) {
+        sel.value = String(curVal);
+    } else {
+        // Saved value isn't in the curated list (e.g. legacy save or a
+        // user-typed number) — switch to Custom so the saved value is
+        // visible rather than silently clamping to 60.
+        sel.value = customSentinel;
+    }
+    // Make sure state has a sane value even if nothing else has set it.
+    if (state.settings[flag] == null) state.settings[flag] = 60;
     const help = el('div', { class: 'field-help', id: `help-${flag}` }, helpText);
     return el('div', { class: 'field full' }, [label, sel, help]);
 }

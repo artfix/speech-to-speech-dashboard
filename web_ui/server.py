@@ -185,6 +185,27 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="speech-to-speech dashboard", lifespan=lifespan)
 
 
+# No-cache middleware for all static assets. Without this, browsers
+# happily serve a stale ``app.js`` across dashboard restarts, which
+# means a user iterating on dashboard code can spend a long time
+# wondering why their changes don't appear. ETag + Last-Modified
+# headers alone aren't enough — Chromium often ignores them on
+# same-origin GETs after a soft refresh.
+@app.middleware("http")
+async def _no_cache_static(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/") or path.startswith("/static-repo/"):
+        # ``no-cache`` lets the browser cache, but requires revalidation
+        # every time. ``no-store`` would force a full re-download every
+        # page load, which is wasteful for our 80 KB app.js — revalidate
+        # is the right balance.
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 # ---- Settings --------------------------------------------------------------
 
 
@@ -214,10 +235,17 @@ def api_post_settings(body: dict[str, Any]) -> dict[str, Any]:
     # call this AFTER the write so a transient Ollama outage doesn't lose
     # the user's saved setting — the pinger reads from the settings dict
     # the user just confirmed, not from disk.
+    # 0.3.2+: the pinger has been replaced by the one-shot warmup
+    # (see _one_shot_keepalive_async below). The call is kept as a
+    # no-op for rollback parity.
     try:
         llm_keepaliver.update_from_settings(body)
     except Exception:  # noqa: BLE001
         logger.exception("Failed to update llm keepalive from settings save")
+    # Fire a one-shot Ollama warmup so the selected model is loaded
+    # into VRAM and the unload timer is set in a single request.
+    # Background-thread, never blocks the Save response.
+    _one_shot_keepalive_async(body)
     return {"ok": True, "path": str(SETTINGS_PATH)}
 
 
@@ -241,6 +269,10 @@ def api_patch_settings(body: dict[str, Any]) -> dict[str, Any]:
         llm_keepaliver.update_from_settings(current)
     except Exception:  # noqa: BLE001
         logger.exception("Failed to update llm keepalive from settings patch")
+    # 0.3.2+: also fire a one-shot warmup so per-field patches (e.g.
+    # theme-style auto-saves from the model dropdown) load the model
+    # the moment the user picks it, no Save click required.
+    _one_shot_keepalive_async(current)
     return {"ok": True, "path": str(SETTINGS_PATH), "settings": current}
 
 
@@ -454,6 +486,264 @@ def api_qwen3_set_active_voice(speaker: str) -> dict[str, Any]:
         current["--tts"] = "qwen3"
     _write_settings(current)
     return {"ok": True, "speaker": speaker, "settings": current}
+
+
+# ----------------------------------------------------------------------
+# Ollama model discovery + one-shot keep-alive (0.3.2+)
+# ----------------------------------------------------------------------
+# Replaces the previous background pinger in ``web_ui/llm_keepalive.py``
+# (now deprecated). The flow is:
+#
+# 1. The frontend asks ``GET /api/ollama/models?base_url=...`` to populate
+#    the ``--model-name`` dropdown on the LLM tab.
+# 2. When the user clicks **Save Settings** or **Start Pipeline**, the
+#    dashboard fires ``POST /api/ollama/keepalive`` in a background
+#    thread, which sends ONE ``/api/generate`` request to Ollama with
+#    ``keep_alive=<user's value>`` — that single call both loads the
+#    model into VRAM and sets the unload deadline. Ollama itself
+#    enforces the deadline; no pings are needed.
+#
+# Both endpoints are best-effort: any failure is logged + surfaced to
+# the in-app Logs tab, but never blocks the Save/Start response.
+def _looks_like_ollama_url(url: str) -> bool:
+    """Heuristic: does this base URL look like a local/remote Ollama server?
+
+    Used by the frontend to decide whether to show the model dropdown.
+    Defaults to allowing the dropdown on any URL containing ``:11434``
+    (Ollama's default port) or the substring ``/ollama``. Real OpenAI
+    URLs (``api.openai.com``) fail the check and fall back to free-text.
+    """
+    s = (url or "").strip().lower()
+    if not s:
+        return False
+    return ":11434" in s or "/ollama" in s
+
+
+@app.get("/api/ollama/models")
+def api_ollama_list_models(
+    base_url: str = Query(...),
+    api_key: Optional[str] = Query(None),
+) -> dict[str, Any]:
+    """List models installed on the Ollama server at ``base_url``.
+
+    Calls ``{base_url}/models`` (OpenAI-compat) and returns
+    ``{"models": [{"id": ...}, ...], "error": str|None}``. The frontend
+    silently falls back to a free-text input on any error — we never
+    raise HTTPException here.
+    """
+    if not base_url.strip():
+        return {"models": [], "error": "base_url is required"}
+    key = (api_key or "ollama").strip() or "ollama"
+    url = base_url.rstrip("/") + "/models"
+    import httpx
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
+            )
+        if not (200 <= resp.status_code < 300):
+            # Truncate the body so a 50 KB error page doesn't bloat the
+            # response — first 200 chars is enough to debug.
+            err_body = (resp.text or "")[:200]
+            return {
+                "models": [],
+                "error": f"HTTP {resp.status_code}: {err_body}",
+            }
+        data = resp.json()
+        # OpenAI shape: {"object": "list", "data": [{"id": "...", ...}, ...]}.
+        # Some Ollama versions / proxies may also return {"models": [...]}.
+        items = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            items = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return {"models": [], "error": "unexpected response shape"}
+        models = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            mid = it.get("id") or it.get("name")
+            if isinstance(mid, str) and mid:
+                models.append({"id": mid})
+        return {"models": models, "error": None}
+    except httpx.HTTPError as e:
+        return {"models": [], "error": f"{type(e).__name__}: {e}"}
+    except Exception as e:  # noqa: BLE001
+        return {"models": [], "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/ollama/keepalive")
+def api_ollama_keepalive(body: dict[str, Any]) -> dict[str, Any]:
+    """Send ONE ``/api/generate`` to Ollama to load the model + set keep_alive.
+
+    Body:
+    - ``base_url`` (required): the OpenAI-compat URL the user configured.
+    - ``api_key`` (optional): defaults to ``"ollama"``.
+    - ``model`` (required): the Ollama model identifier.
+    - ``keep_alive`` (required): an Ollama duration string (``"5m"``,
+      ``"-1"`` for forever, ``"0"`` to skip). Empty / ``"0"`` short-
+      circuits with ``{"ok": true, "skipped": "..."}`` — the user has
+      chosen to disable the warmup.
+    - ``timeout_s`` (optional): integer seconds to wait for Ollama to
+      load the model. Defaults to ``60`` (matches the dashboard's
+      ``--ollama-load-timeout-seconds`` default). Must be in
+      ``[5, 600]`` — anything outside the range is clamped.
+
+    Returns ``{"ok": bool, "skipped": str|None, "message": str|None}``.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+    base_url = (body.get("base_url") or "").strip()
+    model = (body.get("model") or "").strip()
+    keep_alive = (body.get("keep_alive") or "").strip()
+    api_key = (body.get("api_key") or "ollama").strip() or "ollama"
+    # Parse + clamp the timeout so a misconfigured value can't hang the
+    # background thread for hours. Anything under 5s is useless for a
+    # cold load; anything over 10 min is almost certainly a typo.
+    try:
+        timeout_s = int(body.get("timeout_s") or 60)
+    except (TypeError, ValueError):
+        timeout_s = 60
+    timeout_s = max(5, min(600, timeout_s))
+    if not base_url:
+        return {"ok": False, "skipped": None, "message": "base_url is required"}
+    if not model:
+        return {"ok": False, "skipped": None, "message": "model is required"}
+    if not keep_alive or keep_alive == "0":
+        return {"ok": True, "skipped": "keep_alive is 0/empty", "message": None}
+    # We call Ollama's native ``/api/generate`` rather than the
+    # OpenAI-compat ``/v1/chat/completions`` because (a) it accepts
+    # ``keep_alive`` directly in the body without any hack, and (b) with
+    # an empty ``prompt`` and ``stream=false`` it returns ~immediately
+    # once the model is loaded. 10-second timeout because a cold load
+    # can legitimately take 10-30s.
+    origin = base_url.rstrip("/")
+    if origin.endswith("/v1"):
+        origin = origin[: -len("/v1")]
+    url = origin + "/api/generate"
+    payload = {
+        "model": model,
+        "prompt": "",
+        "stream": False,
+        "keep_alive": keep_alive,
+    }
+    import httpx
+    try:
+        # ``timeout_s`` is the user-controlled max wait for a cold load
+        # (clamped to [5, 600] above). Default 60 s; users on a slow
+        # LAN loading a 70 B model can bump it from the dashboard. The
+        # call runs in a background thread so blocking here is fine.
+        with httpx.Client(timeout=float(timeout_s)) as client:
+            resp = client.post(
+                url,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+        if 200 <= resp.status_code < 300:
+            return {"ok": True, "skipped": None, "message": None}
+        snippet = (resp.text or "")[:200]
+        return {
+            "ok": False,
+            "skipped": None,
+            "message": f"HTTP {resp.status_code}: {snippet}",
+        }
+    except httpx.HTTPError as e:
+        return {
+            "ok": False,
+            "skipped": None,
+            "message": f"{type(e).__name__}: {e}",
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "skipped": None,
+            "message": f"{type(e).__name__}: {e}",
+        }
+
+
+def _one_shot_keepalive_async(settings: dict[str, Any]) -> None:
+    """Fire-and-forget Ollama warmup for the user's current settings.
+
+    Background-thread entry point. No-ops if the LLM backend is not
+    OpenAI-compat, the keep_alive is empty/0, or the URL doesn't look
+    like Ollama. Surfaces the result in the in-app Logs tab.
+    """
+    backend = (settings.get("--llm-backend") or "").strip()
+    if backend not in ("chat-completions", "responses-api"):
+        return
+    base_url = (settings.get("--responses-api-base-url") or "").strip()
+    if not _looks_like_ollama_url(base_url):
+        return
+    model = (settings.get("--model-name") or "").strip()
+    if not model:
+        return
+    keep_alive = (settings.get("--llm-keepalive") or "").strip()
+    if not keep_alive or keep_alive == "0":
+        return
+    api_key = (settings.get("--responses-api-api-key") or "ollama").strip() or "ollama"
+    # The user-tunable max wait for a cold load. Defaults to 60 s; the
+    # dashboard exposes this as ``--ollama-load-timeout-seconds`` on the
+    # LLM tab next to ``--llm-keepalive``. The endpoint clamps to
+    # ``[5, 600]``; we just pass it through.
+    try:
+        timeout_s = int(settings.get("--ollama-load-timeout-seconds") or 60)
+    except (TypeError, ValueError):
+        timeout_s = 60
+
+    def _runner() -> None:
+        import httpx
+        try:
+            # 10 s is plenty for a localhost-to-localhost HTTP call. The
+            # *real* timeout (potentially 60+ s for a cold load) is the
+            # ``timeout_s`` we forward to the keepalive endpoint, which
+            # applies to the Ollama call itself, not this one.
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(
+                    "http://127.0.0.1:8050/api/ollama/keepalive",
+                    json={
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "model": model,
+                        "keep_alive": keep_alive,
+                        "timeout_s": timeout_s,
+                    },
+                )
+            if 200 <= resp.status_code < 300:
+                data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                if data.get("skipped"):
+                    _publish_log(
+                        f"[ollama] warmup skipped: {data['skipped']}",
+                        level="info",
+                    )
+                elif data.get("ok"):
+                    _publish_log(
+                        f"[ollama] warmup ok model='{model}' keep_alive='{keep_alive}'",
+                        level="info",
+                    )
+                else:
+                    _publish_log(
+                        f"[ollama] warmup failed: {data.get('message')}",
+                        level="warning",
+                    )
+            else:
+                _publish_log(
+                    f"[ollama] warmup HTTP {resp.status_code}: {resp.text[:200]}",
+                    level="warning",
+                )
+        except Exception as e:  # noqa: BLE001
+            _publish_log(
+                f"[ollama] warmup error: {type(e).__name__}: {e}",
+                level="warning",
+            )
+
+    t = threading.Thread(target=_runner, name="ollama-one-shot-keepalive", daemon=True)
+    t.start()
 
 
 @app.post("/api/qwen3/voice/test")
@@ -1186,10 +1476,17 @@ def api_process_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
     # pinger startup can't delay the pipeline's first LLM call. The pinger
     # itself is a no-op if the user picked a non-Ollama backend or left
     # ``--llm-keepalive`` at its default "0".
+    # 0.3.2+: the pinger call is a no-op; the actual warmup happens via
+    # the one-shot request below. Both run after Start so a slow Ollama
+    # load doesn't block the pipeline.
     try:
         llm_keepaliver.update_from_settings(settings)
     except Exception:  # noqa: BLE001
         logger.exception("Failed to update llm keepalive from process start")
+    # Fire-and-forget warmup — covers the case where the user changed
+    # the model in the dropdown and clicked Start without first
+    # clicking Save.
+    _one_shot_keepalive_async(settings)
     status = state.process.get_status()
     status["gpu_message"] = gpu_msg
     return {"ok": True, "status": status}
