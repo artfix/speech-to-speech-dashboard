@@ -33,6 +33,13 @@
       "2h",
       "12h",
       "-1"
+    ],
+    "--responses-api-reasoning-effort": [
+      "",
+      "none",
+      "low",
+      "medium",
+      "high"
     ]
   }
 }
