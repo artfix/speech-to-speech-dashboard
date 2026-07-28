@@ -124,3 +124,18 @@ class ChatterboxTTSHandlerArguments:
         default=512,
         metadata={"help": "Size of audio blocks to yield for streaming. Default is 512."},
     )
+    chatterbox_split_sentences: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "When True (default), each TTSInput is split into sentences (NLTK punkt) and "
+                "synthesized one at a time so the speaker starts playing sentence 1 while "
+                "sentence 2 is still generating on the GPU. Cuts TTFA by ~1-2s on a typical "
+                "3-sentence reply. The per-sentence cost is ~0.5-1s of extra overhead, so on a "
+                "single-sentence reply the speedup is zero and the behavior is effectively "
+                "identical to a single generate() call. Falls back to a single synthesize() if "
+                "NLTK or punkt_tab is unavailable, or if the input is a single sentence. "
+                "Set to False to force the pre-v0.3.8 single-call path."
+            )
+        },
+    )
