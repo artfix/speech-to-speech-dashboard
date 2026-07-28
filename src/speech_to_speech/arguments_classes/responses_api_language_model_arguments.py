@@ -32,3 +32,12 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
             "For Together Qwen3.5 models this sends chat_template_kwargs.enable_thinking=false."
         },
     )
+    responses_api_num_ctx: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Optional per-request context window (num_ctx) forwarded as extra_body={'options': {'num_ctx': N}}. "
+            "Honoured by Ollama (and other providers that accept the Ollama-style options map); ignored by the "
+            "official OpenAI server. Use to cap VRAM usage on small Ollama models when the model's default "
+            "context (often 128k) is far larger than needed for short chat turns. Default is None (use provider default)."
+        },
+    )

@@ -136,6 +136,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         speculative_turns: SpeculativeTurnTracker | None = None,
         disable_thinking: bool = True,
         reasoning_effort: Optional[str] = None,
+        num_ctx: Optional[int] = None,
         request_timeout_s: float = 20.0,
         stream_batch_sentences: int = 3,
         enable_lang_prompt: bool = False,
@@ -157,7 +158,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         self.user_role = user_role
         self.client = OpenAI(api_key=api_key, base_url=base_url)
-        self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort)
+        self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort, num_ctx)
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
         self.warmup()
 
@@ -179,6 +180,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         base_url: Optional[str],
         disable_thinking: bool,
         reasoning_effort: Optional[str],
+        num_ctx: Optional[int] = None,
     ) -> Optional[dict[str, Any]]:
         """Build the provider-specific ``extra_body`` used to disable reasoning.
 
@@ -188,6 +190,15 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         non-empty ``reasoning_effort`` therefore takes precedence; otherwise we fall
         back to the chat-template flag. None of this applies to the official
         OpenAI server, which rejects unknown extra_body keys.
+
+        ``num_ctx`` is intentionally NOT forwarded here. The dashboard passes it
+        once via the one-shot Ollama warmup (``/api/generate`` with
+        ``options.num_ctx``) so the loaded model's KV cache is allocated at the
+        user's chosen size the first time it's loaded into VRAM. The setting
+        persists on the Ollama server for as long as the model stays loaded
+        (governed by ``keep_alive``) — we don't need to re-send it on every
+        chat-completions request, and re-sending wouldn't change anything if
+        the value matched.
         """
         if base_url is None or cls._is_official_openai(base_url):
             return None

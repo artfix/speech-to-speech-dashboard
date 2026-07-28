@@ -591,6 +591,11 @@ def api_ollama_keepalive(body: dict[str, Any]) -> dict[str, Any]:
       load the model. Defaults to ``60`` (matches the dashboard's
       ``--ollama-load-timeout-seconds`` default). Must be in
       ``[5, 600]`` — anything outside the range is clamped.
+    - ``num_ctx`` (optional): integer context window forwarded as
+      ``options.num_ctx``. When set, the warmup loads the model at the
+      chosen context size so the very first chat request doesn't have
+      to pay a second cold-load for the smaller window. Matches what the
+      pipeline sends on every subsequent chat-completions call.
 
     Returns ``{"ok": bool, "skipped": str|None, "message": str|None}``.
     """
@@ -608,6 +613,19 @@ def api_ollama_keepalive(body: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         timeout_s = 60
     timeout_s = max(5, min(600, timeout_s))
+    # Optional context-window cap. Forwarded as ``options.num_ctx`` on the
+    # warmup request so the model is loaded at the user's chosen size from
+    # the start. Invalid (non-positive, non-numeric) values are ignored
+    # silently — Ollama's own model-default is a sane fallback.
+    num_ctx_raw = body.get("num_ctx")
+    num_ctx: Optional[int] = None
+    if num_ctx_raw is not None and num_ctx_raw != "":
+        try:
+            n = int(num_ctx_raw)
+            if n > 0:
+                num_ctx = n
+        except (TypeError, ValueError):
+            pass
     if not base_url:
         return {"ok": False, "skipped": None, "message": "base_url is required"}
     if not model:
@@ -630,6 +648,12 @@ def api_ollama_keepalive(body: dict[str, Any]) -> dict[str, Any]:
         "stream": False,
         "keep_alive": keep_alive,
     }
+    if num_ctx is not None:
+        # Ollama accepts ``options`` as a free-form map of inference knobs;
+        # ``num_ctx`` caps the context window so a 128k model loaded at 8k
+        # doesn't pay the full memory cost. Ignored silently on Ollama
+        # builds that don't recognise the field.
+        payload["options"] = {"num_ctx": num_ctx}
     import httpx
     try:
         # ``timeout_s`` is the user-controlled max wait for a cold load
@@ -695,6 +719,18 @@ def _one_shot_keepalive_async(settings: dict[str, Any]) -> None:
         timeout_s = int(settings.get("--ollama-load-timeout-seconds") or 60)
     except (TypeError, ValueError):
         timeout_s = 60
+    # Optional context-window cap. Forwarded as options.num_ctx on the
+    # warmup call so the model is loaded at the chosen size from the
+    # start. Invalid / non-positive values are dropped at the endpoint.
+    num_ctx_raw = settings.get("--responses-api-num-ctx")
+    num_ctx: Optional[int] = None
+    if num_ctx_raw is not None and num_ctx_raw != "":
+        try:
+            n = int(num_ctx_raw)
+            if n > 0:
+                num_ctx = n
+        except (TypeError, ValueError):
+            pass
 
     def _runner() -> None:
         import httpx
@@ -704,15 +740,18 @@ def _one_shot_keepalive_async(settings: dict[str, Any]) -> None:
             # ``timeout_s`` we forward to the keepalive endpoint, which
             # applies to the Ollama call itself, not this one.
             with httpx.Client(timeout=10.0) as client:
+                payload: dict[str, Any] = {
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "model": model,
+                    "keep_alive": keep_alive,
+                    "timeout_s": timeout_s,
+                }
+                if num_ctx is not None:
+                    payload["num_ctx"] = num_ctx
                 resp = client.post(
                     "http://127.0.0.1:8050/api/ollama/keepalive",
-                    json={
-                        "base_url": base_url,
-                        "api_key": api_key,
-                        "model": model,
-                        "keep_alive": keep_alive,
-                        "timeout_s": timeout_s,
-                    },
+                    json=payload,
                 )
             if 200 <= resp.status_code < 300:
                 data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
