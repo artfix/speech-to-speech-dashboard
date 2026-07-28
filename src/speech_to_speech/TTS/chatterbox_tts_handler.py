@@ -517,43 +517,91 @@ class ChatterboxTTSHandler(BaseHandler[TTSIn, TTSOut]):
         pipeline_start = perf_counter()
         first_chunk = True
 
-        try:
-            wav = self._generate_waveform(text, language_code)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Chatterbox generation failed: %s", e)
-            return
-        if first_chunk:
-            logger.debug("Time to first audio: %.3fs", perf_counter() - pipeline_start)
-            first_chunk = False
+        sentences = self._split_sentences(text)
+        logger.debug(
+            "Chatterbox (%s): %d sentence(s) for: %s",
+            self.model_variant,
+            len(sentences),
+            text[:50],
+        )
 
-        if gen is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(gen):
-            logger.info("TTS generation cancelled (interruption) after synthesis")
-            return
-
-        # Convert to numpy float32 in [-1, 1]. Chatterbox returns a torch tensor
-        # shaped (1, n_samples).
-        wav_np = wav.detach().cpu().numpy().squeeze(0).astype(np.float32)
-        if wav_np.ndim != 1:
-            wav_np = wav_np.reshape(-1)
-
-        # Resample 24 kHz -> self.sample_rate using polyphase filtering.
-        if self._needs_resampling:
-            from scipy.signal import resample_poly
-
-            wav_np = resample_poly(wav_np, up=self._resample_up, down=self._resample_down)
-
-        # Int16 conversion with hard clip to avoid wrap-around.
-        audio_int16 = np.clip(wav_np * 32768, -32768, 32767).astype(np.int16)
-
-        # Yield in blocksize chunks, padding the last one with zeros.
-        for i in range(0, len(audio_int16), self.blocksize):
+        for sentence_idx, sentence in enumerate(sentences):
+            # Cancellation between sentences: if the user interrupted during
+            # sentence N, don't waste GPU time starting sentence N+1.
             if gen is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(gen):
-                logger.info("TTS generation cancelled (interruption) during chunk yield")
+                logger.info(
+                    "TTS generation cancelled (interruption) between sentences (sentence %d/%d)",
+                    sentence_idx,
+                    len(sentences),
+                )
                 return
-            chunk = audio_int16[i : i + self.blocksize]
-            if len(chunk) < self.blocksize:
-                chunk = np.pad(chunk, (0, self.blocksize - len(chunk)))
-            yield chunk
+
+            try:
+                wav = self._generate_waveform(sentence, language_code)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Chatterbox generation failed on sentence %d: %s",
+                    sentence_idx,
+                    e,
+                )
+                return
+            if first_chunk:
+                logger.debug("Time to first audio: %.3fs", perf_counter() - pipeline_start)
+                first_chunk = False
+
+            if gen is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(gen):
+                logger.info("TTS generation cancelled (interruption) after synthesis")
+                return
+
+            # Convert to numpy float32 in [-1, 1]. Chatterbox returns a torch tensor
+            # shaped (1, n_samples).
+            wav_np = wav.detach().cpu().numpy().squeeze(0).astype(np.float32)
+            if wav_np.ndim != 1:
+                wav_np = wav_np.reshape(-1)
+
+            # Resample 24 kHz -> self.sample_rate using polyphase filtering.
+            if self._needs_resampling:
+                from scipy.signal import resample_poly
+
+                wav_np = resample_poly(wav_np, up=self._resample_up, down=self._resample_down)
+
+            # Int16 conversion with hard clip to avoid wrap-around.
+            audio_int16 = np.clip(wav_np * 32768, -32768, 32767).astype(np.int16)
+
+            # Yield in blocksize chunks, padding the last one with zeros.
+            for i in range(0, len(audio_int16), self.blocksize):
+                if gen is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(gen):
+                    logger.info("TTS generation cancelled (interruption) during chunk yield")
+                    return
+                chunk = audio_int16[i : i + self.blocksize]
+                if len(chunk) < self.blocksize:
+                    chunk = np.pad(chunk, (0, self.blocksize - len(chunk)))
+                yield chunk
+
+    def _split_sentences(self, text: str) -> list[str]:
+        """Split ``text`` on sentence boundaries using NLTK punkt.
+
+        Used by :meth:`process` to chunk chatterbox synthesis per-sentence so
+        the speaker starts playing sentence 1 the moment it's ready, while
+        sentence 2 is still being generated.
+
+        NLTK punkt_tab is already downloaded at pipeline startup
+        (``s2s_pipeline.py:74-80``), so no new dependency.
+
+        Falls back to a single-element list on any failure (NLTK import error,
+        missing punkt_tab data, empty result, etc.) so the caller behaves
+        exactly like the current sync path -- one ``_generate_waveform`` call
+        with the full text.
+        """
+        if not text or not text.strip():
+            return [text] if text else []
+        try:
+            from nltk import sent_tokenize
+
+            sentences = sent_tokenize(text.strip())
+        except Exception:  # noqa: BLE001
+            return [text]
+        return sentences or [text]
 
     def _generate_waveform(self, text: str, language_code: Optional[str]) -> Any:
         """Call the variant-appropriate ``model.generate(...)`` and return a torch tensor.

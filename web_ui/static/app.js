@@ -527,19 +527,22 @@ function renderSettingsTab(tab, groupId) {
             });
         }
 
-        const mount = el('div', { id: 'voice-library-mount' });
-        tab.appendChild(mount);
-        // Two voice-library UIs coexist in this mount: the chatterbox
-        // voice library hides itself when --tts != "chatterbox"; the
-        // qwen3 voice library does the inverse. Calling both is
-        // idempotent because each one early-returns + hides the
-        // container when the other backend is selected. We pass the
-        // same DOM node so each backend fully owns the mount when it's
-        // active (the other's render() no-ops).
+        // Two voice libraries (chatterbox cloned voices + qwen3 preset
+        // speakers) live on the TTS tab. They used to share a single
+        // #voice-library-mount, but the chatterbox renderer awaits
+        // fetchVoices() while the qwen3 renderer is synchronous, so
+        // qwen3's "hide-when-I'm-not-active" branch would clobber the
+        // mount's display state mid-fetch and hide the chatterbox
+        // library after it had populated its DOM. Each library now
+        // owns its own mount so neither can stomp the other.
+        const chatterboxMount = el('div', { id: 'voice-library-mount-chatterbox' });
+        const qwen3Mount = el('div', { id: 'voice-library-mount-qwen3' });
+        tab.appendChild(chatterboxMount);
+        tab.appendChild(qwen3Mount);
         const rerenderLibrary = () => {
-            renderVoiceLibrary(mount, state.settings, () => renderAll());
+            renderVoiceLibrary(chatterboxMount, state.settings, () => renderAll());
             if (typeof window.renderQwen3VoiceLibrary === 'function') {
-                window.renderQwen3VoiceLibrary(mount, state.settings, () => renderAll());
+                window.renderQwen3VoiceLibrary(qwen3Mount, state.settings, () => renderAll());
             }
         };
         // Initial paint
@@ -783,7 +786,7 @@ function renderField(f, parentTitle) {
         // appears for Base models). Trigger a library re-render.
         sel.addEventListener('change', () => {
             if (typeof window.renderQwen3VoiceLibrary === 'function') {
-                const mount = document.getElementById('voice-library-mount');
+                const mount = document.getElementById('voice-library-mount-qwen3');
                 if (mount) window.renderQwen3VoiceLibrary(mount, state.settings, () => renderAll());
             }
         });
