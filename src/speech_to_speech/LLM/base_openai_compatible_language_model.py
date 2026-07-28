@@ -167,16 +167,18 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             self.warmup_timeout_s,
             connect=min(10.0, self.warmup_timeout_s),
         )
-        # Warmup messages are user-controlled via the dashboard. The dashboard
-        # field defaults to "." (a neutral single character) so the warmup
-        # request doesn't prime the model with a system persona that conflicts
-        # with the personality set in the conversation app. The user can edit
-        # either field to whatever they want — the pipeline passes them through
-        # verbatim. There is no hidden fallback: if the user sets neither, the
-        # CLI args carry the dashboard default ("."); if the user sets them
-        # explicitly, those values are used.
-        self.warmup_system_prompt = warmup_system_prompt
-        self.warmup_user_prompt = warmup_user_prompt
+        # Warmup messages are user-controlled via the dashboard. The default
+        # is the historical hardcoded "You are a helpful assistant" / "Hello"
+        # because that primes gpt-oss:20b and similar text-only models into a
+        # stable persona; without that priming the model's first chat turn
+        # gets dominated by the conversation-app persona prompt and may
+        # trigger tool calls (e.g. camera) that the model can't service and
+        # Ollama rejects with 400. The user can override either field via the
+        # dashboard if they want a different warmup.
+        self.warmup_system_prompt = (
+            warmup_system_prompt if warmup_system_prompt is not None else "You are a helpful assistant"
+        )
+        self.warmup_user_prompt = warmup_user_prompt if warmup_user_prompt is not None else "Hello"
 
         self.user_role = user_role
         self.client = OpenAI(api_key=api_key, base_url=base_url)

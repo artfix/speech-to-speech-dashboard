@@ -51,21 +51,20 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
         },
     )
     responses_api_warmup_system_prompt: Optional[str] = field(
-        default=".",
+        default="You are a helpful assistant",
         metadata={
             "help": "System message sent on the pipeline's startup warmup request. The warmup "
             "exists only to load the model into VRAM before the first real chat turn; its reply "
-            "is discarded. Set this to a neutral single character (the default) so the warmup "
-            "doesn't prime the model with a system persona that conflicts with the user-facing "
-            "personality configured elsewhere. Use a longer string if your model requires a "
-            "non-empty system message. Default is '.'."
+            "is discarded. Edit this to whatever warmup persona you want — for a text-only model "
+            "(e.g. gpt-oss:20b) the default 'You are a helpful assistant' keeps the conversation "
+            "app's auto-prompt from triggering camera / image tools that would 400. Default is "
+            "'You are a helpful assistant'."
         },
     )
     responses_api_warmup_user_prompt: Optional[str] = field(
-        default=".",
+        default="Hello",
         metadata={
             "help": "User message sent on the pipeline's startup warmup request. Same purpose "
-            "as --responses-api-warmup-system-prompt: keep it neutral so the warmup doesn't "
-            "shape the model's persona for subsequent real chat turns. Default is '.'."
+            "as --responses-api-warmup-system-prompt. Default is 'Hello'."
         },
     )
