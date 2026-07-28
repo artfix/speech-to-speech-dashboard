@@ -102,7 +102,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
                 {"role": "user", "content": "Hello"},
             ],
             extra_body=self._extra_body,
-            timeout=self.request_timeout,
+            timeout=self.warmup_timeout,
         )
         end = time.time()
         logger.info(f"{self.__class__.__name__}:  warmed up! time: {(end - start):.3f} s")

@@ -138,6 +138,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         reasoning_effort: Optional[str] = None,
         num_ctx: Optional[int] = None,
         request_timeout_s: float = 20.0,
+        warmup_timeout_s: float = 180.0,
         stream_batch_sentences: int = 3,
         enable_lang_prompt: bool = False,
         compact_history: bool = False,
@@ -154,6 +155,15 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self.request_timeout = httpx.Timeout(
             self.request_timeout_s,
             connect=min(10.0, self.request_timeout_s),
+        )
+        # Warmup timeout is separate from the per-request timeout because cold
+        # loads of large models can take much longer than a single chat turn.
+        # The warmup only runs once at pipeline startup; failing it there is
+        # fatal (the pipeline subprocess exits), so we let it wait longer.
+        self.warmup_timeout_s = float(warmup_timeout_s)
+        self.warmup_timeout = httpx.Timeout(
+            self.warmup_timeout_s,
+            connect=min(10.0, self.warmup_timeout_s),
         )
 
         self.user_role = user_role
@@ -182,7 +192,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         reasoning_effort: Optional[str],
         num_ctx: Optional[int] = None,
     ) -> Optional[dict[str, Any]]:
-        """Build the provider-specific ``extra_body`` used to disable reasoning.
+        """Build the provider-specific ``extra_body`` used to disable reasoning
+        and pin the Ollama context window.
 
         Providers differ in how reasoning is turned off: vLLM/Qwen honour
         ``chat_template_kwargs.enable_thinking=false``, while others (e.g. GLM via
@@ -191,22 +202,26 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         back to the chat-template flag. None of this applies to the official
         OpenAI server, which rejects unknown extra_body keys.
 
-        ``num_ctx`` is intentionally NOT forwarded here. The dashboard passes it
-        once via the one-shot Ollama warmup (``/api/generate`` with
-        ``options.num_ctx``) so the loaded model's KV cache is allocated at the
-        user's chosen size the first time it's loaded into VRAM. The setting
-        persists on the Ollama server for as long as the model stays loaded
-        (governed by ``keep_alive``) — we don't need to re-send it on every
-        chat-completions request, and re-sending wouldn't change anything if
-        the value matched.
+        ``num_ctx`` is forwarded as ``options.num_ctx`` (the Ollama-native key).
+        The dashboard passes it on every warmup request so the model is loaded
+        at the user's chosen context size from the start. Ollama keeps the
+        KV cache at that size for the lifetime of the loaded model, so we
+        don't need to re-send it on every chat-completions turn — but we DO
+        need to send it on the warmup so the first chat-completions request
+        after pipeline startup doesn't trigger a second context-switch /
+        reload, which on a 20B+ model can take longer than the per-request
+        timeout and kill the pipeline subprocess.
         """
         if base_url is None or cls._is_official_openai(base_url):
             return None
+        body: dict[str, Any] = {}
         if reasoning_effort:
-            return {"reasoning_effort": reasoning_effort}
-        if disable_thinking:
-            return {"chat_template_kwargs": {"enable_thinking": False}}
-        return None
+            body["reasoning_effort"] = reasoning_effort
+        elif disable_thinking:
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        if num_ctx is not None and num_ctx > 0:
+            body["options"] = {"num_ctx": int(num_ctx)}
+        return body or None
 
     # ── subclass hooks ──────────────────────────────────────────────────────--
 

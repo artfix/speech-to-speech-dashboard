@@ -41,3 +41,12 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
             "context (often 128k) is far larger than needed for short chat turns. Default is None (use provider default)."
         },
     )
+    responses_api_warmup_timeout_s: float = field(
+        default=180.0,
+        metadata={
+            "help": "Timeout in seconds for the pipeline's startup warmup request to the LLM server. "
+            "Cold loads of large Ollama models (e.g. 20B+ at full context) can take 30-60s, so the "
+            "default is intentionally larger than the per-request timeout (20s). Set higher if "
+            "you're loading a very large model on a slow LAN. Default is 180.0."
+        },
+    )

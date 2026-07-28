@@ -679,7 +679,27 @@ def build_argv(settings: dict[str, Any]) -> list[str]:
     pipeline treats ``""`` and "not set" the same in most places; some
     fields like ``--responses_api_api_key`` do accept ``""`` and we preserve
     that by checking ``"value" in settings``).
+
+    The dashboard's ``--ollama-load-timeout-seconds`` is mirrored to the
+    pipeline's ``--responses-api-warmup-timeout-s`` unless the user has set
+    the pipeline flag directly. Keeps the user-facing knob as one number
+    (the keepalive ping AND the pipeline warmup both honour it), and spares
+    the user from thinking about two separate timeouts.
     """
+    # Mirror the dashboard-only Ollama timeout to the pipeline's warmup
+    # timeout. We only inject the value when the pipeline field isn't already
+    # set, so power users can override the warmup timeout independently.
+    settings = dict(settings)
+    ollama_timeout = settings.get("--ollama-load-timeout-seconds")
+    if ollama_timeout is not None and "--responses-api-warmup-timeout-s" not in settings:
+        # Clamp to the same [5, 600] range as the keepalive endpoint. The
+        # pipeline's dataclass also clamps, but doing it here too means the
+        # rendered CLI matches the user's intent.
+        try:
+            t = int(ollama_timeout)
+        except (TypeError, ValueError):
+            t = 60
+        settings["--responses-api-warmup-timeout-s"] = max(5, min(600, t))
     argv: list[str] = ["-m", "speech_to_speech.s2s_pipeline"]
     drop = _backend_args_to_drop(settings)
     for flag, value in settings.items():
