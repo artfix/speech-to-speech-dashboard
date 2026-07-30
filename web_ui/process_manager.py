@@ -211,6 +211,7 @@ class PipelineProcess:
             argv = build_argv(settings)
             env = self._build_env(settings.get("env") or [])
             self._maybe_inject_openai_api_key(settings, env)
+            self._maybe_install_openai_timeout_patch(settings, env)
             self._state.last_argv = argv
             self._state.last_env = env
             self._state.started_at = time.time()
@@ -235,6 +236,7 @@ class PipelineProcess:
             proc = self._state.process
             if proc is None or proc.poll() is not None:
                 self._state.process = None
+                self._remove_openai_timeout_patch()
                 return
             logger.info("Stopping pipeline (pid=%s)", proc.pid)
             self._terminate(proc)
@@ -251,6 +253,7 @@ class PipelineProcess:
         with self._lock:
             self._state.process = None
             self._state.started_at = None
+            self._remove_openai_timeout_patch()
 
     def restart(self, settings: dict[str, Any]) -> None:
         self.stop()
@@ -435,3 +438,177 @@ class PipelineProcess:
         if api_key:  # user explicitly set a non-empty key; respect it
             return
         env["OPENAI_API_KEY"] = "ollama"
+
+    # ------------------------------------------------------------------
+    # OpenAI SDK monkey-patch (Hermes tab timeout knob)
+    # ------------------------------------------------------------------
+    # When the LLM backend is Hermes, the pipeline's hardcoded 20 s
+    # read timeout is what produces the canned "Wow I'm a bit slow
+    # today, could you repeat that?" loop. The user-controlled knob
+    # ``hermes.read_timeout_s`` (default 0 = wait forever) lives in
+    # web_ui_settings.json. We translate that into
+    # ``DASHBOARD_LLM_READ_TIMEOUT_S`` in the subprocess env and
+    # install a tiny ``sitecustomize.py`` in the venv's site-packages
+    # so ``_dash_openai_timeout_patch`` is auto-imported before the
+    # pipeline's ``OpenAI(...)`` constructor runs. We remove both
+    # files on pipeline stop so the venv stays clean. The patch is
+    # a strict no-op for non-Hermes backends -- we never write the
+    # files unless ``--llm-backend-type == 'hermes'``.
+
+    _OPENAI_PATCH_FILENAME = "_dash_openai_timeout_patch.py"
+    _SITECUSTOMIZE_FILENAME = "sitecustomize.py"
+    _SITECUSTOMIZE_PROBE_MARKER = "_dash_openai_timeout_patch"
+
+    @staticmethod
+    def _is_hermes_backend(settings: dict[str, Any]) -> bool:
+        """True iff the user picked the Hermes proxy as the LLM backend.
+
+        The dashboard stores ``--llm-backend-type`` in the settings
+        dict; "hermes" means the pipeline points at our
+        ``/hermes-proxy/v1`` reverse proxy instead of at Ollama
+        directly.
+        """
+        return (settings.get("--llm-backend-type") or "").strip().lower() == "hermes"
+
+    @staticmethod
+    def _read_timeout_s(settings: dict[str, Any]) -> int:
+        """Read ``hermes.read_timeout_s`` from settings; default 0 (infinite)."""
+        hermes_cfg = settings.get("hermes") or {}
+        if not isinstance(hermes_cfg, dict):
+            return 0
+        raw = hermes_cfg.get("read_timeout_s", 0)
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            return 0
+        if v < 0:
+            return 0
+        return v
+
+    @classmethod
+    def _site_packages_dir(cls) -> Optional[Path]:
+        """Find the venv's site-packages directory.
+
+        Returns None if it can't be found -- the patch is then a
+        no-op and the pipeline keeps its 20 s default. The user
+        will see the canned fallback loop, but the dashboard itself
+        will still work.
+        """
+        try:
+            import site as _site  # noqa: PLC0415
+            candidates = [Path(p) for p in _site.getsitepackages()]
+        except Exception:  # noqa: BLE001
+            candidates = []
+        # Prefer the one that actually contains ``site.py`` -- a
+        # virtualenv's site-packages is always a parent of ``site``.
+        for sp in candidates:
+            if (sp / "site.py").exists():
+                return sp
+        if candidates:
+            return candidates[0]
+        return None
+
+    @classmethod
+    def _maybe_install_openai_timeout_patch(
+        cls, settings: dict[str, Any], env: dict[str, str]
+    ) -> None:
+        """Install the openai monkey-patch into the venv (Hermes only)."""
+        if not cls._is_hermes_backend(settings):
+            # Always clean up leftovers from a prior Hermes run before
+            # launching a non-Hermes pipeline -- we never want the
+            # patch active when the user isn't using Hermes.
+            cls._remove_openai_timeout_patch()
+            return
+
+        timeout_s = cls._read_timeout_s(settings)
+        env["DASHBOARD_LLM_READ_TIMEOUT_S"] = str(timeout_s)
+
+        sp = cls._site_packages_dir()
+        if sp is None:
+            logger.warning(
+                "Could not locate venv site-packages; Hermes timeout knob will "
+                "not take effect (pipeline keeps the 20 s default)."
+            )
+            return
+
+        try:
+            repo_root = Path(__file__).resolve().parent.parent
+            patch_src = repo_root / "web_ui" / "_openai_timeout_patch.py"
+            patch_dst = sp / cls._OPENAI_PATCH_FILENAME
+            sitecustomize_path = sp / cls._SITECUSTOMIZE_FILENAME
+
+            if not patch_src.exists():
+                logger.warning(
+                    "OpenAI timeout patch source missing at %s; knob disabled",
+                    patch_src,
+                )
+                return
+
+            # Copy the patch into site-packages so the
+            # sitecustomize.py importer can find it as a top-level
+            # module (without the ``web_ui.`` package prefix).
+            patch_dst.write_text(patch_src.read_text(encoding="utf-8"), encoding="utf-8")
+
+            # If a sitecustomize.py already exists, append a guarded
+            # import so we don't trample whatever the user has there.
+            # The probe marker keeps the append idempotent across
+            # repeated pipeline (re)starts.
+            existing = sitecustomize_path.read_text(encoding="utf-8") if sitecustomize_path.exists() else ""
+            if cls._SITECUSTOMIZE_PROBE_MARKER not in existing:
+                snippet = (
+                    "\n\n# Auto-installed by speech-to-speech-dashboard when the "
+                    "Hermes tab's LLM read timeout knob is active. Safe to delete; "
+                    "it is removed on pipeline stop.\n"
+                    "try:\n"
+                    "    import _dash_openai_timeout_patch  # noqa: F401\n"
+                    "except Exception:  # noqa: BLE001\n"
+                    "    pass\n"
+                )
+                sitecustomize_path.write_text(existing + snippet, encoding="utf-8")
+
+            logger.info(
+                "Installed openai timeout patch for Hermes (timeout_s=%s) at %s",
+                timeout_s,
+                sp,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to install openai timeout patch; pipeline will use the "
+                "20 s default. The Hermes tab knob will not take effect."
+            )
+
+    @classmethod
+    def _remove_openai_timeout_patch(cls) -> None:
+        """Best-effort removal of the patch + its sitecustomize marker.
+
+        Called on pipeline stop and on every non-Hermes start (so a
+        prior Hermes run never leaks into a different LLM backend).
+        """
+        sp = cls._site_packages_dir()
+        if sp is None:
+            return
+        try:
+            patch_path = sp / cls._OPENAI_PATCH_FILENAME
+            if patch_path.exists():
+                patch_path.unlink()
+            sitecustomize_path = sp / cls._SITECUSTOMIZE_FILENAME
+            if sitecustomize_path.exists():
+                txt = sitecustomize_path.read_text(encoding="utf-8")
+                if cls._SITECUSTOMIZE_PROBE_MARKER in txt:
+                    # Strip our appended block but leave any other
+                    # sitecustomize content the user (or another
+                    # tool) put there.
+                    marker = "# Auto-installed by speech-to-speech-dashboard"
+                    idx = txt.find(marker)
+                    if idx != -1:
+                        # Walk back to the start of the preceding blank-line block
+                        cut = txt[:idx].rstrip() + "\n"
+                        if cut.strip():
+                            sitecustomize_path.write_text(cut, encoding="utf-8")
+                        else:
+                            sitecustomize_path.unlink()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to remove openai timeout patch from %s; harmless but worth a manual cleanup",
+                sp,
+            )

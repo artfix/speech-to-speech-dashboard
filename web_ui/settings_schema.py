@@ -530,9 +530,13 @@ def _backend_meta() -> dict[str, Any]:
 def get_defaults() -> dict[str, Any]:
     """Flat ``{flag: default_value}`` map covering every dashboard field.
 
-    Includes a ``theme`` entry for the UI itself and an ``env`` list for
-    additional environment variables. These two are not introspected from
-    argument classes -- they live in the settings file.
+    Includes a ``theme`` entry for the UI itself, an ``env`` list for
+    additional environment variables, and a ``hermes`` block for the
+    Hermes Agent tab. These are not introspected from argument classes
+    — they live in the settings file. The ``api_key`` is auto-generated
+    the first time the user starts hermes (see
+    :meth:`web_ui.hermes_manager.HermesProcess.ensure_api_key`), so
+    the default value is just an empty string.
     """
     out: dict[str, Any] = {
         "theme": "cyberpunk-neon",
@@ -542,6 +546,42 @@ def get_defaults() -> dict[str, Any]:
         # to load a model into VRAM during the one-shot warmup before
         # giving up. 0.3.2+; the upstream pipeline has no such setting.
         "--ollama-load-timeout-seconds": 60,
+        # Dashboard-only LLM toggle. When the user picks "hermes", the
+        # dashboard auto-fills the LLM URL/api_key fields with the
+        # hermes-proxy base URL + hermes api_key. The pipeline itself
+        # never sees this flag — the auto-fill mutates the existing
+        # ``--responses-api-base-url`` / ``--responses-api-api-key``
+        # / ``--llm-backend`` fields before they go into argv.
+        # Default ``direct`` keeps today's behavior (talk to whatever
+        # URL the user typed in, e.g. their local ollama).
+        "--llm-backend-type": "direct",
+        # Hermes Agent tab defaults. ``api_key`` is generated on first
+        # start (32 random bytes via ``secrets.token_hex``). The
+        # ``filler_phrases`` defaults match the canonical "let me
+        # check" phrasing — users can edit them in the Hermes tab.
+        "hermes": {
+            "enabled": False,
+            "port": 8642,
+            "host": "127.0.0.1",
+            "api_key": "",
+            "model_name": "qwen3.5:9b",
+            "filler_enabled": True,
+            "filler_phrases": [
+                "one moment",
+                "let me check",
+                "thinking...",
+                "give me a second",
+            ],
+            "compress_context_every_n_turns": 20,
+            # 0 = no read timeout (wait forever for the LLM stream),
+            # >0 = read timeout in seconds. Used by the openai SDK
+            # monkey-patch installed by process_manager.py when the
+            # LLM backend is Hermes. Defaults to 0 because the
+            # pipeline's own 20 s default is too tight for large
+            # models and long passages -- it produces the canned
+            # "Wow I'm a bit slow today..." fallback loop.
+            "read_timeout_s": 0,
+        },
     }
     for group in get_full_schema()["groups"]:
         for f in group["fields"]:
@@ -564,8 +604,18 @@ def get_defaults() -> dict[str, Any]:
 # ``--llm-keepalive`` and ``--ollama-load-timeout-seconds`` are dashboard-
 # only Ollama warmup settings that the dashboard's one-shot keepalive
 # consumes — they can't be forwarded as CLI flags because the upstream
-# pipeline has no such arguments.
-_NON_FORWARDED = {"theme", "env", "--llm-keepalive", "--ollama-load-timeout-seconds"}
+# pipeline has no such arguments. ``hermes`` is the Hermes Agent tab
+# config block (subprocess config + filler phrases + session id); it
+# belongs to the dashboard's separate hermes subprocess, not the
+# pipeline, so it must never leak into the pipeline's argv.
+_NON_FORWARDED = {
+    "theme",
+    "env",
+    "--llm-keepalive",
+    "--ollama-load-timeout-seconds",
+    "--llm-backend-type",
+    "hermes",
+}
 
 
 # CLI flags that only apply to specific backends. If the user picks a

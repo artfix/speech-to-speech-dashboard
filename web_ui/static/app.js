@@ -122,6 +122,7 @@ async function api(path, opts = {}) {
 
 const getJSON = (path) => api(path);
 const postJSON = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
+const putJSON = (path, body) => api(path, { method: 'PUT', body: JSON.stringify(body) });
 
 // ---- Ollama model discovery (0.3.2+) ----------------------------------
 // Mirrors the URL heuristic in web_ui/server.py:_looks_like_ollama_url:
@@ -326,6 +327,7 @@ const TAB_DEFS = [
     { id: 'guide', label: 'Guide', icon: '?' },
     { id: 'settings', label: 'Settings', icon: '$' },
     { id: 'control', label: 'Control', icon: '!' },
+    { id: 'hermes', label: 'Hermes', icon: 'H' },
 ];
 
 function buildNavAndTabs() {
@@ -449,6 +451,8 @@ function renderAll() {
             renderSettingsFileTab(tab);
         } else if (t.id === 'control') {
             renderControlTab(tab);
+        } else if (t.id === 'hermes') {
+            renderHermesTab(tab);
         }
     }
     applyDisabledStates();
@@ -492,6 +496,12 @@ function renderSettingsTab(tab, groupId) {
     if (groupId === 'llm') {
         const grid2 = tab.querySelector('.form-grid');
         if (grid2) {
+            // 0.4.0+: Hermes Agent backend toggle. Hand-rendered (it's
+            // not in the introspected schema — dashboard-only). Sits at
+            // the top of the LLM tab so the user picks the brain before
+            // they see the URL/api-key fields. Auto-fills the LLM URL
+            // + api_key + backend when "hermes" is selected.
+            grid2.appendChild(renderHermesBackendField());
             grid2.appendChild(renderKeepaliveField());
             // 0.3.2+: dashboard-only max-wait for the one-shot Ollama
             // warmup. Default 60 s; users on a slow LAN loading a 70 B
@@ -551,8 +561,79 @@ function renderSettingsTab(tab, groupId) {
     updateSubgroupVisibility();
 }
 
+// Inline banner text for flags whose pipeline-side behaviour is broken or
+// limited in a way the user needs to know about before they configure the
+// field. Each entry is shown as a red alert directly under the field's
+// help text. Keep messages short and concrete — they appear in-form, not
+// in a modal. Add new entries here when a pipeline flag needs a "this
+// doesn't work the way you'd expect" callout.
+const FIELD_WARNINGS = {
+    "--responses-api-num-ctx": (
+        "⚠ NOT WORKING with Ollama as of this build. Ollama's " +
+        "/v1/chat/completions endpoint silently ignores options.num_ctx " +
+        "(upstream issue #16814, fix PR #16825 still unmerged). " +
+        "The value you set here is sent to Ollama but Ollama loads the " +
+        "model at its native context instead. Workaround: set the " +
+        "context in the Ollama Modelfile (PARAMETER num_ctx N) or via " +
+        "OLLAMA_CONTEXT_LENGTH on the Ollama machine."
+    ),
+};
+
 function renderField(f, parentTitle) {
     const fieldId = `f-${f.flag}`;
+    // ---- Hermes-backend: --model-name is read-only --------------------
+    // When the user picks "Hermes Agent" in the LLM tab, the LLM URL
+    // is auto-filled with the dashboard's reverse proxy and the
+    // pipeline talks to hermes. The model is whatever hermes has
+    // loaded — the user changes it via `hermes model` in their
+    // terminal. The dashboard has no business pretending to control
+    // it, so we hide the editable --model-name input and replace it
+    // with a read-only label that fetches the active model from
+    // /api/hermes/models. The same label is also shown on the Hermes
+    // tab (this is the single source of truth for the displayed
+    // model when backend === hermes).
+    //
+    // We DO keep the underlying state.settings["--model-name"] value
+    // untouched (whatever the user typed before flipping to hermes),
+    // so flipping back to "direct" restores the editable field with
+    // the same value they had. The pipeline's --model-name flag
+    // continues to be forwarded regardless — hermes ignores it, but
+    // it's harmless and keeps the CLI argv stable.
+    if (
+        f.flag === '--model-name'
+        && f.ui !== 'checkbox'
+        && (state.settings['--llm-backend-type'] || '').toLowerCase() === 'hermes'
+    ) {
+        const hermesLabel = el('div', {
+            id: fieldId,
+            class: 'field-readonly-model',
+            style: {
+                padding: '6px 10px',
+                background: 'var(--bg-elev, rgba(255,255,255,0.04))',
+                border: '1px solid var(--border, rgba(255,255,255,0.1))',
+                borderRadius: '4px',
+                fontFamily: 'monospace',
+                color: 'var(--accent, #6cf)',
+                minHeight: '20px',
+            },
+        }, '(loading hermes model...)');
+        const hermesHelp = el('div', { class: 'text-dim', style: { marginTop: '4px', fontSize: '12px' } },
+            'Model is set via `hermes model` in your terminal. The ' +
+            'dashboard just displays whatever hermes has loaded.');
+        const hermesWrap = el('div', { class: 'field' }, [
+            el('label', { class: 'field-label', for: fieldId }, [
+                f.flag,
+                el('span', { class: 'field-flag' }, ''),
+            ]),
+            hermesLabel,
+            hermesHelp,
+        ]);
+        // Kick off the fetch and update the label as soon as it lands.
+        // Idempotent: safe to call multiple times during re-renders.
+        _fetchHermesModelInto(hermesLabel);
+        return hermesWrap;
+    }
+
     // Build a short hover-tooltip preview from the full help text. Native
     // ``title=`` tooltips don't reflow, so we trim to ~220 chars and add an
     // ellipsis. Clicking the ``?`` still toggles the full inline help div.
@@ -952,6 +1033,17 @@ function renderField(f, parentTitle) {
     }
 
     const wrapChildren = refAudioRow ? [label, input, refAudioRow, help] : [label, input, help];
+    // If this field has an inline warning, append it as a red banner under
+    // the help text. ``FIELD_WARNINGS`` is keyed by the CLI flag; missing
+    // keys mean no warning is shown, so existing fields render unchanged.
+    if (Object.prototype.hasOwnProperty.call(FIELD_WARNINGS, f.flag)) {
+        const warning = el(
+            'div',
+            { class: 'field-warning' },
+            FIELD_WARNINGS[f.flag]
+        );
+        wrapChildren.push(warning);
+    }
     const wrap = el('div', { class: 'field' }, wrapChildren);
     // Optional String fields benefit from full width since they may be long.
     if (f.ui === 'textarea' || f.type === 'optional_string') {
@@ -1226,6 +1318,114 @@ function renderOllamaLoadTimeoutField() {
     return el('div', { class: 'field full' }, [label, sel, help]);
 }
 
+
+// 0.4.0+: "Backend type" dropdown for the LLM tab. Picks between
+// "Direct backend" (today's behavior — the pipeline talks to whatever
+// URL is in --responses-api-base-url, typically local Ollama) and
+// "Hermes Agent" (the pipeline talks to the dashboard's reverse proxy
+// at /hermes-proxy/v1, which forwards to the hermes subprocess with
+// the right Authorization + X-Hermes-Session-Id headers).
+//
+// Switching to "hermes" auto-fills the LLM URL / api_key / backend
+// fields so the user doesn't have to type them by hand. Switching
+// back to "direct" leaves whatever the user typed in place — they
+// can edit it again from there. The value lives in
+// ``state.settings["--llm-backend-type"]`` (dashboard-only; the
+// pipeline never sees it).
+//
+// This is hand-rolled (not via the introspected renderField path)
+// because the upstream pipeline has no such flag — the auto-fill is
+// pure dashboard orchestration, see docs/HERMES_TAB_PLAN.md §4.
+const _HERMES_BACKEND_VALUES = [
+    { value: "direct", label: "Direct backend  (ollama / vLLM / llama.cpp / OpenAI)" },
+    { value: "hermes", label: "Hermes Agent    (skills + memory + HA control)" },
+];
+
+// Where the dashboard's hermes reverse proxy is reachable. Computed
+// from the dashboard's own host:port so the user doesn't have to
+// hard-code it. We grab the dashboard's URL via window.location so
+// this works behind a reverse proxy too (the proxy preserves the
+// public origin).
+function _hermesProxyBaseUrl() {
+    // window.location.origin is "http(s)://host:port" — we drop the
+    // trailing slash and append the proxy mount prefix.
+    const o = (window.location && window.location.origin) || '';
+    return o.replace(/\/+$/, '') + '/hermes-proxy/v1';
+}
+
+function renderHermesBackendField() {
+    const flag = '--llm-backend-type';
+    const fieldId = `f-${flag}`;
+    const hoverPreview =
+        'Picks the LLM backend the pipeline talks to. "Direct" talks to the URL ' +
+        'and api_key fields below (today\'s behavior — Ollama, vLLM, llama.cpp, ' +
+        'OpenAI, …). "Hermes Agent" routes through the dashboard\'s reverse ' +
+        'proxy to a hermes-agent subprocess on this machine, so the robot ' +
+        'gets skills, memory, and Home Assistant control.';
+    const helpText =
+        '"Direct backend" (default) makes the pipeline talk directly to the ' +
+        'URL + api_key + model fields below — your local Ollama, a remote ' +
+        'vLLM, llama.cpp, OpenAI, etc. ' +
+        '"Hermes Agent" makes the pipeline talk to the dashboard\'s reverse ' +
+        'proxy at /hermes-proxy/v1, which forwards to the hermes-agent ' +
+        'subprocess you manage from the Hermes tab. ' +
+        'When you pick Hermes Agent, the LLM URL is auto-filled with the ' +
+        'proxy URL and the api_key is auto-filled with the Hermes tab\'s ' +
+        'API key — both can be edited afterwards. The pipeline gets a ' +
+        'session id (X-Hermes-Session-Id) automatically so your ' +
+        'conversation keeps memory across turns.';
+
+    const label = el('label', { class: 'field-label', for: fieldId }, [
+        flag,
+        el('span', { class: 'field-flag' }, ''),
+        el('button', {
+            type: 'button', class: 'help-btn', title: hoverPreview,
+            onclick: (e) => {
+                e.preventDefault();
+                const field = e.currentTarget.closest('.field');
+                const help = field && field.querySelector('.field-help');
+                if (help) help.classList.toggle('visible');
+            },
+        }, '?'),
+    ]);
+
+    // Default to "direct" if the field hasn't been set yet — keeps
+    // today's behavior for users who never touch the toggle.
+    if (state.settings[flag] == null) state.settings[flag] = 'direct';
+    const curVal = String(state.settings[flag]);
+
+    const sel = el('select', {
+        class: 'field-select', id: fieldId,
+        onchange: (e) => {
+            const v = e.target.value;
+            state.settings[flag] = v;
+            if (v === 'hermes') {
+                // Auto-fill the LLM URL + api_key + backend so the
+                // pipeline points at the dashboard's reverse proxy.
+                // We pull the api_key from the persisted hermes
+                // block — it's the one the dashboard generated on
+                // first /api/hermes/start.
+                const hermesCfg = (state.settings.hermes && typeof state.settings.hermes === 'object')
+                    ? state.settings.hermes : {};
+                const apiKey = hermesCfg.api_key || '';
+                state.settings['--responses-api-base-url'] = _hermesProxyBaseUrl();
+                state.settings['--responses-api-api-key'] = apiKey;
+                state.settings['--llm-backend'] = 'chat-completions';
+            }
+            // Re-render the LLM tab so the URL / api_key fields show
+            // the new values. Cheap (a single DOM rebuild).
+            renderAll();
+        },
+    });
+    for (const o of _HERMES_BACKEND_VALUES) {
+        const opt = el('option', { value: o.value }, o.label);
+        if (o.value === curVal) opt.selected = true;
+        sel.appendChild(opt);
+    }
+    const help = el('div', { class: 'field-help', id: `help-${flag}` }, helpText);
+    return el('div', { class: 'field full' }, [label, sel, help]);
+}
+
 // ---- Status & Logs tab ----------------------------------------------
 
 function renderStatusTab(tab) {
@@ -1381,11 +1581,24 @@ function renderLogs() {
         if (filter === 'INFO') return lvl !== 'DEBUG';
         return true;
     };
+    // User is rebuilding the view (e.g. changed the log filter) — jump
+    // to the bottom regardless of where they were scrolled.
     for (const line of state._logBuffer || []) {
         if (!show(line.level)) continue;
         con.appendChild(el('div', { class: `log-line ${line.level}` }, line.text));
     }
     con.scrollTop = con.scrollHeight;
+}
+
+// True iff the log console is scrolled to (or close to) the bottom. Used
+// to decide whether new log lines should auto-scroll the view. When the
+// user has scrolled up to read earlier output, we leave them alone —
+// pinning to the bottom is hostile to anyone trying to read a backtrace.
+function isLogConsoleAtBottom(con) {
+    // 24px tolerance: anything within a couple of lines of the bottom
+    // counts as "at the bottom". Once the user scrolls past that
+    // threshold, auto-scroll disengages until they scroll back down.
+    return (con.scrollHeight - con.scrollTop - con.clientHeight) < 24;
 }
 
 function appendLogLine(line) {
@@ -1403,8 +1616,16 @@ function appendLogLine(line) {
         return true;
     };
     if (show(line.level)) {
+        // Snapshot the user's scroll position BEFORE we mutate the DOM,
+        // because appending a child changes scrollHeight and would mask
+        // whether they had scrolled up to read.
+        const wasAtBottom = isLogConsoleAtBottom(con);
         con.appendChild(el('div', { class: `log-line ${line.level}` }, line.text));
-        con.scrollTop = con.scrollHeight;
+        if (wasAtBottom) {
+            // User was following the tail — keep them there.
+            con.scrollTop = con.scrollHeight;
+        }
+        // Otherwise: user scrolled up to read; don't yank them back down.
     }
 }
 
@@ -1754,6 +1975,590 @@ function renderControlTab(tab) {
     ]);
     tab.appendChild(row2);
 }
+
+// ---- Hermes Agent tab ------------------------------------------------
+//
+// All hermes-agent controls live here (plan §3: "all hermes-agent
+// functionality lives in this tab, no leaks to other tabs"). The
+// tab shows:
+//   - a status badge (running? port? model? ready?)
+//   - Start / Polite Stop buttons
+//   - Filler audio config (on/off + 10-line phrase box)
+//   - A text console that streams /api/hermes/chat SSE
+//   - Logs filtered to source === "hermes" from the shared /ws/logs
+//   - Cancel / Kill buttons in a "Emergency" section
+//
+// State is re-fetched from /api/hermes/status every 2s while the tab
+// is active; the rest of the dashboard polls less often.
+//
+// The pipeline's LLM slot talks to hermes via /hermes-proxy/v1/* on
+// the dashboard's own port (see web_ui/hermes_proxy.py). When the
+// user picks "Hermes Agent" in the LLM tab, --responses-api-base-url
+// is auto-filled with that URL.
+
+let _hermesChatAbort = null;  // AbortController for the in-flight SSE
+
+function renderHermesTab(tab) {
+    tab.textContent = '';
+    tab.appendChild(el('div', { class: 'tab-header' }, [
+        el('h1', { class: 'tab-title' }, 'Hermes Agent'),
+        el('div', { class: 'tab-subtitle' },
+            'Manage the hermes-agent subprocess. Pick "Hermes Agent" in the LLM tab ' +
+            'to route the voice pipeline through hermes (skills, memory, Home Assistant).'),
+    ]));
+
+    // ---- Status badge (top-right of the header) ----------------------
+    const badge = el('div', { id: 'hermes-status-badge', class: 'hermes-badge' });
+    tab.appendChild(el('div', { class: 'hermes-header-row' }, [
+        el('div', {}, []),
+        badge,
+    ]));
+
+    // ---- Lifecycle buttons ------------------------------------------
+    const btnStart = el('button', { class: 'btn btn-primary btn-large',
+        onclick: () => hermesStart(btnStart, btnStop) }, '▶ Start');
+    const btnStop  = el('button', { class: 'btn btn-large',
+        onclick: () => hermesStop() }, '■ Polite Stop');
+    const btnCancel = el('button', { class: 'btn btn-warning btn-large',
+        onclick: () => hermesCancel() }, '⏸ Cancel');
+    const btnKill  = el('button', { class: 'btn btn-danger btn-large',
+        onclick: () => hermesKillConfirm() }, '✖ Kill Hermes');
+    const btnResetSession = el('button', { class: 'btn btn-large',
+        onclick: () => hermesResetSession() }, '↻ Reset session');
+    const btnOpen = el('a', {
+        class: 'btn', href: 'http://127.0.0.1:9119',
+        target: '_blank', rel: 'noopener noreferrer',
+    }, '↗ Open Hermes Dashboard');
+    tab.appendChild(el('div', { class: 'btn-row' }, [btnStart, btnStop]));
+    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Model'));
+    const modelLine = el('div', { class: 'text-dim', id: 'hermes-model-line' },
+        'Model: (not loaded yet)');
+    tab.appendChild(modelLine);
+    // Hint that the model is owned by hermes, not the dashboard.
+    const modelHint = el('div', { class: 'text-dim', id: 'hermes-model-hint',
+        style: { fontSize: '12px', marginTop: '4px' } },
+        'Change via `hermes model` in your terminal. The dashboard ' +
+        'just displays whatever hermes has loaded.');
+    tab.appendChild(modelHint);
+
+    // ---- LLM read timeout knob (Hermes-only) --------------------------
+    // The pipeline hardcodes a 20 s read timeout for every chat /
+    // response call. When a user asks hermes to read a long passage,
+    // or a large model takes longer than 20 s to first byte, the
+    // pipeline's httpx client times out and the canned fallback
+    // ``"Wow I'm a bit slow today, could you repeat that?"`` is
+    // spoken by the TTS — to the user, hermes looks stuck in a loop.
+    //
+    // The knob lives here (not in the LLM tab) because it only
+    // matters when the LLM backend is Hermes. For other backends
+    // (direct Ollama / OpenAI / vLLM / llama.cpp) the SDK defaults
+    // are fine. The knob installs a monkey-patch on the openai SDK
+    // when the pipeline subprocess starts (see web_ui/process_manager.py
+    // and web_ui/_openai_timeout_patch.py) — and the patch is removed
+    // on pipeline stop.
+    //
+    // 0 = no read timeout at all (httpx.Timeout(None)); the pipeline
+    //     waits forever for the LLM to close the stream.
+    // >0 = read timeout in seconds (httpx.Timeout(N)).
+    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'LLM read timeout'));
+    const timeoutHover =
+        'Max seconds the pipeline waits for the LLM (hermes) to send ' +
+        'its response before giving up and playing the canned fallback ' +
+        '"Wow I\'m a bit slow today...". 0 = wait forever. Increase ' +
+        'this ONLY if you actually want hermes to give up faster on ' +
+        'long-running prompts (rare).';
+    const timeoutHelpText =
+        'How long the pipeline waits for hermes to start streaming a ' +
+        'response before giving up. The pipeline\'s own hardcoded ' +
+        'default is 20 s — too short for large models or long passages, ' +
+        'which produces the canned "Wow I\'m a bit slow today" reply. ' +
+        '0 = wait forever (recommended). >0 = seconds. Only matters ' +
+        'when the LLM backend is "Hermes Agent" in the LLM tab; for ' +
+        'other backends the openai SDK\'s own defaults apply.';
+    // Ensure state.settings.hermes is an object so the form has
+    // somewhere to write. Mirrors how state.settings.env is treated
+    // elsewhere — never trust the server shape.
+    if (!state.settings.hermes || typeof state.settings.hermes !== 'object') {
+        state.settings.hermes = {};
+    }
+    let timeoutVal = parseInt(state.settings.hermes.read_timeout_s, 10);
+    if (!Number.isFinite(timeoutVal) || timeoutVal < 0) timeoutVal = 0;
+    const timeoutInput = el('input', {
+        type: 'number', id: 'hermes-read-timeout',
+        class: 'field-input', min: '0', step: '5',
+        style: { width: '120px' },
+        oninput: (e) => {
+            const raw = parseInt(e.target.value, 10);
+            const v = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+            state.settings.hermes.read_timeout_s = v;
+        },
+    });
+    timeoutInput.value = String(timeoutVal);
+    const timeoutLabel = el('label', { class: 'field-label', for: 'hermes-read-timeout' }, [
+        '--hermes.read_timeout_s',
+        el('span', { class: 'field-flag' }, ''),
+        el('button', {
+            type: 'button', class: 'help-btn', title: timeoutHover,
+            onclick: (e) => {
+                e.preventDefault();
+                const field = e.currentTarget.closest('.field');
+                const help = field && field.querySelector('.field-help');
+                if (help) help.classList.toggle('visible');
+            },
+        }, '?'),
+    ]);
+    const timeoutHelp = el('div', { class: 'field-help', id: 'help-hermes.read_timeout_s' },
+        timeoutHelpText);
+    // Inline note about the semantics of 0 — separate from the help
+    // text so the user sees it without clicking the ? button.
+    const timeoutNote = el('div', { class: 'text-dim', style: { marginTop: '4px', fontSize: '12px' } },
+        '0 = wait forever (infinite). Increase only if you want hermes ' +
+        'to give up faster on long-running prompts.');
+    tab.appendChild(el('div', { class: 'field' }, [
+        timeoutLabel,
+        timeoutInput,
+        timeoutHelp,
+        timeoutNote,
+    ]));
+
+    // ---- Filler audio config ----------------------------------------
+    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Filler audio'));
+    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px', maxWidth: '720px' } },
+        'Plays a short phrase from this list while hermes is mid-tool-call ' +
+        '(>1.5s without text), so the user knows the agent is still working. ' +
+        'Uses the pipeline\'s TTS — no extra config.'));
+    const fillerToggle = el('input', {
+        type: 'checkbox', id: 'hermes-filler-enabled',
+        onchange: () => hermesFillerSave({ enabled: fillerToggle.checked }),
+    });
+    const fillerBox = el('textarea', {
+        id: 'hermes-filler-box', class: 'field-input',
+        rows: '6', placeholder: 'one phrase per line, up to 10',
+        style: { width: '100%', maxWidth: '720px', fontFamily: 'monospace' },
+        onblur: () => hermesFillerSave({ phrases: _fillerBoxLines() }),
+    });
+    tab.appendChild(el('div', { class: 'field' }, [
+        fillerToggle,
+        el('label', { for: 'hermes-filler-enabled', style: { marginLeft: '8px' } },
+            ' Enable filler phrases'),
+    ]));
+    tab.appendChild(fillerBox);
+
+    // ---- Console (text chat with hermes) ----------------------------
+    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Console'));
+    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px' } },
+        'Text chat with hermes — useful for debugging skills without ' +
+        'talking to the robot. Streams over Server-Sent Events.'));
+    const consoleBox = el('div', { id: 'hermes-console', class: 'log-console',
+        style: { height: '260px', maxWidth: '720px' } });
+    tab.appendChild(consoleBox);
+    const chatInput = el('input', {
+        type: 'text', class: 'field-input', id: 'hermes-chat-input',
+        placeholder: 'Type a message for hermes…', style: { width: '60%', maxWidth: '500px' },
+        onkeydown: (e) => { if (e.key === 'Enter') hermesSendChat(); },
+    });
+    const chatSend = el('button', { class: 'btn btn-primary', onclick: () => hermesSendChat() },
+        'Send');
+    const chatAbort = el('button', { class: 'btn', onclick: () => hermesAbortChat() },
+        'Stop');
+    tab.appendChild(el('div', { class: 'btn-row', style: { marginTop: '8px' } },
+        [chatInput, chatSend, chatAbort]));
+
+    // ---- Logs (filtered to source === "hermes") ----------------------
+    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Logs'));
+    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px' } },
+        'Live hermes subprocess logs. The shared /ws/logs websocket ' +
+        'already tags each line with `source: "hermes"` or "pipeline"; ' +
+        'we filter to hermes here. The full pipeline log is still ' +
+        'on the Status & Logs tab.'));
+    const hermesLogBox = el('div', { id: 'hermes-log-box', class: 'log-console',
+        style: { height: '460px', maxWidth: 'none', width: '100%', overflow: 'auto' } });
+    tab.appendChild(hermesLogBox);
+    const hermesLogFilter = el('select', {
+        class: 'field-select', id: 'hermes-log-filter',
+        onchange: () => _hermesRenderLogs(),
+    }, []);
+    for (const v of ['ALL', 'INFO', 'WARNING', 'ERROR', 'DEBUG']) {
+        hermesLogFilter.appendChild(el('option', { value: v }, v));
+    }
+    tab.appendChild(el('div', { class: 'btn-row' }, [
+        el('span', { class: 'text-dim' }, 'Filter:'),
+        hermesLogFilter,
+        el('button', { class: 'btn', onclick: () => {
+            _hermesLogBuffer = []; _hermesRenderLogs();
+        } }, 'Clear'),
+    ]));
+
+    // ---- Emergency --------------------------------------------------
+    tab.appendChild(el('h3', { style: { marginTop: '24px', color: 'var(--danger, #d33)' } },
+        'Emergency'));
+    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px' } },
+        'Cancel stops the current hermes run cleanly (context preserved). ' +
+        'Kill forces SIGKILL on the subprocess (context lost, fresh start). ' +
+        'Kill requires a confirmation prompt — it is never auto-triggered.'));
+    tab.appendChild(el('div', { class: 'btn-row' }, [btnCancel, btnKill, btnResetSession, btnOpen]));
+
+    // ---- Initial paint + ongoing poll -------------------------------
+    _hermesRefetchLogs();
+    _hermesRefreshStatus();
+    if (!_hermesPollTimer) _hermesPollTimer = setInterval(_hermesTick, 2000);
+}
+
+let _hermesPollTimer = null;
+async function _hermesTick() {
+    // Only poll if the tab is currently visible — saves a fetch on
+    // every other tab the user is on.
+    const tab = document.getElementById('tab-hermes');
+    if (tab && tab.classList.contains('active')) {
+        await Promise.all([_hermesRefreshStatus(), _hermesRefetchLogs()]);
+    }
+    // If the LLM tab is active AND --llm-backend-type === 'hermes',
+    // refresh the read-only model label so `hermes model` changes in
+    // the user's terminal show up within a few seconds. Cheap (one
+    // fetch, only when both conditions hold).
+    const llmTab = document.getElementById('tab-llm');
+    if (llmTab && llmTab.classList.contains('active')) {
+        const labels = document.querySelectorAll('#tab-llm .field-readonly-model');
+        if (labels.length > 0) {
+            // Each --model-name subgroup has its own read-only label;
+            // refresh them all.
+            for (const lab of labels) {
+                _fetchHermesModelInto(lab);
+            }
+        }
+    }
+}
+
+async function _hermesRefreshStatus() {
+    let s = {};
+    try { s = await getJSON('/api/hermes/status'); } catch (e) { /* offline */ }
+    const badge = document.getElementById('hermes-status-badge');
+    if (badge) {
+        badge.textContent = '';
+        badge.className = 'hermes-badge ' +
+            (s.running ? (s.ready ? 'running' : 'starting') : 'stopped');
+        badge.appendChild(el('span', { class: 'hermes-badge-dot' }, ''));
+        const txt = s.running
+            ? `${s.ready ? '● running' : '◐ starting'} :${s.port}` +
+              (s.uptime_s ? `  (${formatUptime(s.uptime_s)})` : '')
+            : '○ stopped';
+        badge.appendChild(el('span', {}, txt));
+    }
+    // The model line is read-only: it shows whatever hermes reports,
+    // not whatever the dashboard's --model-name field claims. The
+    // user changes the model via `hermes model` in the terminal; the
+    // dashboard has no business pretending to control it.
+    //
+    // /api/hermes/status returns `model_name` from
+    // HermesProcess._status() which already queries /v1/models, so
+    // we use it as the primary source. /api/hermes/models is a
+    // secondary signal — if status didn't report a model but
+    // /v1/models does, prefer that (rare but possible during
+    // model swap).
+    let modelName = s.running ? (s.model_name || '') : '';
+    try {
+        const r = await getJSON('/api/hermes/models');
+        if (r && r.models && r.models.length === 1 && !modelName) {
+            modelName = r.models[0].id;
+        }
+    } catch (e) { /* offline — keep the status-derived value */ }
+    const modelLine = document.getElementById('hermes-model-line');
+    if (modelLine) {
+        modelLine.textContent = s.running
+            ? `Model: ${modelName || '(unknown)'}    Endpoint: http://${s.host}:${s.port}/v1`
+            : 'Model: (start hermes to load)';
+    }
+    // Refresh filler config once on first paint (cheap, idempotent).
+    const fillerBox = document.getElementById('hermes-filler-box');
+    const fillerToggle = document.getElementById('hermes-filler-enabled');
+    if (fillerBox && fillerBox.dataset.loaded !== '1') {
+        try {
+            const f = await getJSON('/api/hermes/filler');
+            fillerBox.value = (f.phrases || []).join('\n');
+            fillerBox.dataset.loaded = '1';
+            if (fillerToggle) fillerToggle.checked = !!f.enabled;
+        } catch (e) { /* offline */ }
+    }
+}
+
+let _hermesLogBuffer = [];  // [{index, level, text, ts}, ...]
+let _hermesLogIndex = 0;
+async function _hermesRefetchLogs() {
+    try {
+        // We piggy-back on the shared log websocket; the ``source``
+        // tag tells us which lines belong to hermes. On first load
+        // we also pull the existing buffer so the panel isn't empty
+        // until the next message arrives.
+        const r = await getJSON('/api/logs?since=0');
+        const lines = (r.lines || []).filter(l => l.source === 'hermes');
+        if (lines.length) {
+            const lastIdx = lines[lines.length - 1].index;
+            if (lastIdx > _hermesLogIndex) {
+                _hermesLogIndex = lastIdx;
+                _hermesLogBuffer = _hermesLogBuffer.concat(lines);
+                // Cap to last 500 lines so the DOM doesn't grow forever.
+                if (_hermesLogBuffer.length > 500) {
+                    _hermesLogBuffer = _hermesLogBuffer.slice(-500);
+                }
+                _hermesRenderLogs();
+            }
+        }
+    } catch (e) { /* offline */ }
+}
+
+function _hermesRenderLogs() {
+    const box = document.getElementById('hermes-log-box');
+    if (!box) return;
+    const filterEl = document.getElementById('hermes-log-filter');
+    const filter = filterEl ? filterEl.value : 'ALL';
+    box.textContent = '';
+    for (const l of _hermesLogBuffer) {
+        if (filter !== 'ALL' && l.level !== filter) continue;
+        const row = el('div', { class: 'log-row' }, `[${l.level || 'INFO'}] ${l.text}`);
+        box.appendChild(row);
+    }
+    box.scrollTop = box.scrollHeight;
+}
+
+// Wire the shared /ws/logs websocket to also feed the hermes log
+// panel — without this, the hermes panel only refreshes on the 2s
+// poll, which feels laggy. The pipeline tab does the same trick on
+// the same websocket; we just filter to source === 'hermes'.
+function _hermesSubscribeLogStream() {
+    if (window._hermesLogSubscribed) return;
+    window._hermesLogSubscribed = true;
+    // Wait for the global ws (started by startLogStream) — it might
+    // not be open yet at boot. We poll for state.ws every 500ms.
+    const wire = () => {
+        const ws = state && state.ws;
+        if (!ws) { setTimeout(wire, 500); return; }
+        const orig = ws.onmessage;
+        ws.onmessage = (e) => {
+            if (typeof orig === 'function') orig(e);
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.source !== 'hermes') return;
+                if (msg.index == null || msg.index <= _hermesLogIndex) return;
+                _hermesLogIndex = msg.index;
+                _hermesLogBuffer.push(msg);
+                if (_hermesLogBuffer.length > 500) {
+                    _hermesLogBuffer = _hermesLogBuffer.slice(-500);
+                }
+                _hermesRenderLogs();
+            } catch { /* ignore non-JSON */ }
+        };
+    };
+    wire();
+}
+_hermesSubscribeLogStream();
+
+// One-shot helper to fill a `Model: …` label with whatever hermes
+// currently reports. Used by the LLM tab's read-only --model-name
+// field when --llm-backend-type === 'hermes'. Cheap (3-second
+// timeout, one fetch per render). If the user hasn't started hermes
+// yet, the label stays as "(start hermes to load)" until they do.
+async function _fetchHermesModelInto(labelEl) {
+    if (!labelEl) return;
+    let status = {};
+    try { status = await getJSON('/api/hermes/status'); } catch (e) { /* offline */ }
+    if (!status.running) {
+        labelEl.textContent = '(start hermes to load)';
+        return;
+    }
+    let modelName = status.model_name || '';
+    // Fall back to /api/hermes/models when status didn't report a
+    // model (rare but possible mid-model-swap).
+    if (!modelName) {
+        try {
+            const r = await getJSON('/api/hermes/models');
+            if (r && r.models && r.models.length === 1) modelName = r.models[0].id;
+        } catch (e) { /* keep empty */ }
+    }
+    labelEl.textContent = modelName ? `Model: ${modelName}` : '(unknown)';
+}
+
+function _fillerBoxLines() {
+    const box = document.getElementById('hermes-filler-box');
+    if (!box) return [];
+    return box.value.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 10);
+}
+
+async function hermesFillerSave(patch) {
+    try {
+        await putJSON('/api/hermes/filler', patch);
+        toast('Filler saved.', 'success', 2000);
+    } catch (e) {
+        toast('Filler save failed: ' + e.message, 'error', 4000);
+    }
+}
+
+async function hermesStart(btnStart, btnStop) {
+    if (btnStart) btnStart.disabled = true;
+    try {
+        const r = await postJSON('/api/hermes/start', {});
+        toast(r.status && r.status.running
+            ? 'Hermes started. Model loading...'
+            : 'Hermes starting...', 'info', 2500);
+        _hermesRefreshStatus();
+    } catch (e) {
+        toast('Hermes start failed: ' + (e.detail || e.message), 'error', 6000);
+    } finally {
+        if (btnStart) btnStart.disabled = false;
+    }
+}
+
+async function hermesStop() {
+    showModal('Stop Hermes?', 'Hermes will finish its current turn, then exit. ' +
+        'The dashboard keeps the session id, so the next Start resumes context.',
+        [
+            { label: 'Cancel', kind: '', onClick: () => {} },
+            { label: 'Stop', kind: 'btn-danger', onClick: async () => {
+                try {
+                    await postJSON('/api/hermes/stop', {});
+                    toast('Hermes stopped.', 'info');
+                    _hermesRefreshStatus();
+                } catch (e) {
+                    toast('Stop failed: ' + e.message, 'error', 4000);
+                }
+            } },
+        ]);
+}
+
+async function hermesCancel() {
+    try {
+        await postJSON('/api/hermes/cancel', {});
+        toast('Cancel signal sent to hermes.', 'info');
+    } catch (e) {
+        toast('Cancel failed: ' + e.message, 'error', 4000);
+    }
+}
+
+function hermesKillConfirm() {
+    showModal('Kill Hermes?', 'This sends SIGKILL — the subprocess dies immediately. ' +
+        'All context (skills, memory, conversation) is lost. The pipeline\'s ' +
+        'session id will reset on next Start.',
+        [
+            { label: 'Cancel', kind: '', onClick: () => {} },
+            { label: 'KILL', kind: 'btn-danger', onClick: async () => {
+                try {
+                    await postJSON('/api/hermes/kill', { confirm: true });
+                    toast('Hermes killed.', 'info');
+                    _hermesRefreshStatus();
+                } catch (e) {
+                    toast('Kill failed: ' + e.message, 'error', 4000);
+                }
+            } },
+        ]);
+}
+
+async function hermesSendChat() {
+    const input = document.getElementById('hermes-chat-input');
+    const consoleBox = document.getElementById('hermes-console');
+    if (!input || !consoleBox) return;
+    const msg = (input.value || '').trim();
+    if (!msg) return;
+    if (_hermesChatAbort) {
+        toast('A chat reply is already streaming — press Stop first.', 'info', 3000);
+        return;
+    }
+    // Append the user message to the console for context.
+    const userRow = el('div', { class: 'log-row', style: { color: 'var(--accent, #6cf)' } },
+        `you: ${msg}`);
+    consoleBox.appendChild(userRow);
+    // Placeholder for the assistant reply — we update .textContent as
+    // each token arrives.
+    const assistantRow = el('div', { class: 'log-row', style: { color: 'var(--text, #eee)' } },
+        'hermes: ');
+    consoleBox.appendChild(assistantRow);
+    consoleBox.scrollTop = consoleBox.scrollHeight;
+    input.value = '';
+
+    _hermesChatAbort = new AbortController();
+    try {
+        const r = await fetch('/api/hermes/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: msg,
+            }),
+            signal: _hermesChatAbort.signal,
+        });
+        if (!r.ok || !r.body) {
+            assistantRow.textContent = `hermes: (error ${r.status}: ${await r.text().catch(() => '')})`;
+            return;
+        }
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            // SSE: events separated by blank lines, each line starting
+            // with "data: ". We only care about the data payload here.
+            let nl;
+            while ((nl = buf.indexOf('\n\n')) !== -1) {
+                const ev = buf.slice(0, nl);
+                buf = buf.slice(nl + 2);
+                const m = ev.match(/^data:\s*(.+)$/m);
+                if (!m) continue;
+                const payload = m[1].trim();
+                if (!payload || payload === '[DONE]') continue;
+                try {
+                    const obj = JSON.parse(payload);
+                    const delta = obj && obj.delta
+                        || (obj && obj.choices && obj.choices[0] && obj.choices[0].delta && obj.choices[0].delta.content);
+                    if (delta) {
+                        assistantRow.textContent += delta;
+                        consoleBox.scrollTop = consoleBox.scrollHeight;
+                    }
+                } catch { /* skip non-JSON frames */ }
+            }
+        }
+        // End-of-stream marker.
+        assistantRow.textContent += '\n';
+        consoleBox.scrollTop = consoleBox.scrollHeight;
+    } catch (e) {
+        if (e.name === 'AbortError') {
+            assistantRow.textContent += ' [aborted]';
+        } else {
+            assistantRow.textContent += ` [error: ${e.message}]`;
+        }
+    } finally {
+        _hermesChatAbort = null;
+    }
+}
+
+function hermesAbortChat() {
+    if (_hermesChatAbort) {
+        _hermesChatAbort.abort();
+        _hermesChatAbort = null;
+        toast('Chat reply stopped.', 'info', 2000);
+    }
+}
+
+async function hermesResetSession() {
+    showModal('Reset Hermes session?',
+        'The dashboard will mint a new session id. The next time the ' +
+        'robot talks, hermes will treat it as a fresh conversation — no ' +
+        'memory of skills, context, or previous turns. Useful when ' +
+        'context has grown large and you want to start over without ' +
+        'killing the hermes subprocess.',
+        [
+            { label: 'Cancel', kind: '', onClick: () => {} },
+            { label: 'Reset', kind: 'btn-primary', onClick: async () => {
+                try {
+                    const r = await postJSON('/api/hermes/reset_session', {});
+                    toast('Session reset. New id: ' + (r.session_id || '').slice(0, 8) + '…',
+                        'success', 3000);
+                    _hermesRefreshStatus();
+                } catch (e) {
+                    toast('Reset failed: ' + e.message, 'error', 4000);
+                }
+            } },
+        ]);
+}
+
 
 async function startPipeline() {
     try {
