@@ -37,7 +37,7 @@ from typing import Any, Optional
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from web_ui import __version__ as _DASHBOARD_VERSION
@@ -49,6 +49,19 @@ from web_ui.gpu import (
 )
 from web_ui.llm_keepalive import KeepaliveStatus, LLMKeepAliver
 from web_ui.process_manager import LogLine, PipelineProcess
+from web_ui.hermes_manager import HermesProcess
+from web_ui.hermes_proxy import (
+    PROXY_MOUNT_PREFIX as _HERMES_PROXY_PREFIX,
+)
+from web_ui.hermes_proxy import (
+    refresh_hermes_config as _hermes_proxy_refresh_config,
+)
+from web_ui.hermes_proxy import (
+    reset_session_id as _hermes_proxy_reset_session,
+)
+from web_ui.hermes_proxy import (
+    router as _hermes_proxy_router,
+)
 from web_ui.settings_schema import get_defaults, get_full_schema
 from web_ui.voice_library import (
     ChatterboxNotInstalled,
@@ -118,6 +131,7 @@ class DashboardState:
 
     def __init__(self) -> None:
         self.process = PipelineProcess(repo_root=REPO_ROOT)
+        self.hermes = HermesProcess(repo_root=REPO_ROOT)
         self.websocket_clients: set[WebSocket] = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -126,6 +140,10 @@ class DashboardState:
 
         Called from the process manager's fanout thread; we hop to the asyncio
         loop to actually send. Each call is a no-op if there are no clients.
+
+        Source-tagging is now done by the per-subprocess subscribers
+        (``_pipeline_log_cb`` / ``_hermes_log_cb``), not here, so the
+        websocket can distinguish which subprocess produced each line.
         """
         if not self.websocket_clients:
             return
@@ -162,11 +180,48 @@ llm_keepaliver = LLMKeepAliver()
 # ----------------------------------------------------------------------
 
 
+def _make_source_stamping_subscriber(source: str) -> "callable":
+    """Build a subscriber that stamps a ``source`` field on each log line.
+
+    The pipeline and hermes both fan out through the same websocket,
+    so the frontend needs to know which subprocess a line came from.
+    Wrapping the broadcast call in a per-source adapter keeps the
+    log_line's dataclass clean and avoids mutating shared state from
+    multiple threads.
+    """
+    def _cb(line: LogLine) -> None:
+        # Build a payload with the source tag. We do this here (not in
+        # ``broadcast``) because ``broadcast`` is the shared sink and
+        # already does the asyncio hop — the per-source tagging belongs
+        # at the producer side, before the line gets handed off.
+        d = line.to_dict()
+        d["source"] = source
+        if not state.websocket_clients or state._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            state._send_to_all(d), state._loop
+        )
+    return _cb
+
+
+# Two source-stamping callbacks, one per subprocess. They share the
+# same broadcast path but tag the lines so the frontend can split
+# them. ``unsubscribed=False`` because we manually re-attach the same
+# callback on the subscribe side; we keep the same function reference
+# for clean unsubscribe in ``lifespan``.
+_pipeline_log_cb = _make_source_stamping_subscriber("pipeline")
+_hermes_log_cb = _make_source_stamping_subscriber("hermes")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     state._loop = asyncio.get_running_loop()
-    # Subscribe the broadcast callback to log fanout.
-    state.process.subscribe(state.broadcast)
+    # Subscribe the source-stamping callbacks to each subprocess's log
+    # fanout. The callbacks hand the stamped line to the shared
+    # broadcast path so the single ``/ws/logs`` websocket serves both
+    # pipelines' logs.
+    state.process.subscribe(_pipeline_log_cb)
+    state.hermes.subscribe(_hermes_log_cb)
     try:
         yield
     finally:
@@ -174,7 +229,18 @@ async def lifespan(_app: FastAPI):
             state.process.stop()
         except Exception:  # noqa: BLE001
             logger.exception("Error stopping pipeline on shutdown")
-        state.process.unsubscribe(state.broadcast)
+        # Skip hermes stop if the dashboard is restarting for a wheel
+        # install (the suppression flag is set in _schedule_dashboard_restart).
+        # The user's hermes session keeps running in its own process group
+        # and the new dashboard re-uses it. The explicit /api/hermes/kill
+        # endpoint still works for forced shutdown.
+        if not _SUPPRESS_HERMES_STOP_ON_SHUTDOWN:
+            try:
+                state.hermes.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("Error stopping hermes on shutdown")
+        state.process.unsubscribe(_pipeline_log_cb)
+        state.hermes.unsubscribe(_hermes_log_cb)
         # Tear down the keepalive pinger so the dashboard exits cleanly.
         try:
             llm_keepaliver.stop()
@@ -183,6 +249,19 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="speech-to-speech dashboard", lifespan=lifespan)
+
+
+# Reverse proxy for Hermes Agent. The pipeline's LLM slot is pointed
+# at ``http://<dashboard-host>:<dashboard-port>/hermes-proxy/v1`` when
+# the user picks Hermes Agent in the LLM dropdown. The proxy mounts
+# on the dashboard's own uvicorn (same process, same port) and
+# transparently forwards requests to the hermes subprocess while
+# injecting the ``Authorization`` and ``X-Hermes-Session-Id`` headers
+# the OpenAI client used by the pipeline doesn't know how to set.
+# Resource cost is negligible: the proxy is a few FastAPI routes, no
+# extra process, no extra port. See web_ui/hermes_proxy.py for the
+# full design rationale.
+app.include_router(_hermes_proxy_router, prefix=_HERMES_PROXY_PREFIX)
 
 
 # No-cache middleware for all static assets. Without this, browsers
@@ -785,6 +864,70 @@ def _one_shot_keepalive_async(settings: dict[str, Any]) -> None:
     t.start()
 
 
+# Tracks the warmup-trigger callback so Stop / the next Start can detach
+# it before a fresh one is armed. A single global slot is enough — only
+# one pipeline runs at a time.
+_WARMUP_TRIGGER_CB = {"cb": None}
+
+
+def _arm_warmup_trigger(settings: dict[str, Any]) -> None:
+    """Fire ``_one_shot_keepalive_async`` as soon as the pipeline logs warmup done.
+
+    The pipeline's LLM handler logs ``<Handler>:  warmed up! time: ...``
+    on stdout the moment its startup ``/v1/chat/completions`` request
+    returns. We subscribe to the log stream and trigger our
+    ``/api/generate`` warmup on that exact line — no polling, no fixed
+    sleep, no assumptions about model load time. Since Ollama serialises
+    requests against a single model, our request will be the next one
+    Ollama handles, and ``options.num_ctx`` lands deterministically.
+
+    The callback unsubscribes itself after firing once. If the pipeline
+    never logs a warmup line (e.g. non-Ollama backend, or warmup errored)
+    the callback stays subscribed harmlessly — it just never matches.
+    """
+    cb_state = _WARMUP_TRIGGER_CB
+    # Detach any previous trigger (Stop / new Start) so we don't double-fire.
+    prev = cb_state.get("cb")
+    if prev is not None:
+        try:
+            state.process.unsubscribe(prev)
+        except Exception:  # noqa: BLE001
+            pass
+        cb_state["cb"] = None
+
+    def _on_log(entry) -> None:
+        try:
+            text = getattr(entry, "text", "") or ""
+        except Exception:  # noqa: BLE001
+            return
+        # TEMP DEBUG: log every invocation to the dashboard log so we can
+        # see whether the callback is firing at all.
+        logger.info("[warmup-trigger] saw line: %s", text[:120])
+        if "warmed up" in text or "ChatCompletions" in text:
+            _publish_log(f"[ollama] warmup trigger saw line: {text[:120]}", level="info")
+        # Match the pipeline's warmup-done marker. The pipeline emits this
+        # line in ``src/speech_to_speech/LLM/*.py``'s ``warmup()`` methods.
+        if "warmed up" not in text:
+            return
+        # Detach ourselves so subsequent log lines don't re-trigger.
+        try:
+            state.process.unsubscribe(_on_log)
+        except Exception:  # noqa: BLE001
+            pass
+        cb_state["cb"] = None
+        _publish_log("[ollama] pipeline warmup detected — pinning num_ctx + keep_alive", level="info")
+        _one_shot_keepalive_async(settings)
+
+    try:
+        state.process.subscribe(_on_log)
+        cb_state["cb"] = _on_log
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to arm warmup trigger")
+        # Fall back to the immediate fire so we don't lose the keepalive
+        # entirely if the subscription path is broken for any reason.
+        _one_shot_keepalive_async(settings)
+
+
 @app.post("/api/qwen3/voice/test")
 def api_qwen3_voice_test(body: dict[str, Any]) -> Response:
     """Synthesize a short preview for a qwen3 voice and return WAV bytes.
@@ -1150,6 +1293,12 @@ def _schedule_dashboard_restart(delay: float = 1.5) -> None:
                 cmd = "uv run --no-sync speech-to-speech-web"
         # Spawn detached: kill the parent (current dashboard) and exec the new one.
         logger.info("Restarting dashboard: %s", cmd)
+        # Tell the lifespan exit handler to leave hermes alone. The
+        # dashboard is restarting for a wheel install, not shutting
+        # down for a reason that should take hermes with it. The user
+        # still has the explicit Kill button to force hermes down.
+        global _SUPPRESS_HERMES_STOP_ON_SHUTDOWN
+        _SUPPRESS_HERMES_STOP_ON_SHUTDOWN = True
         try:
             subprocess.Popen(
                 cmd,
@@ -1180,6 +1329,15 @@ def _schedule_dashboard_restart(delay: float = 1.5) -> None:
 # pipeline start on GPU a moment later, no manual intervention.
 _GPU_FIX_LOCK = threading.Lock()
 _GPU_FIX_RUNNING = {"value": False}
+
+# When the dashboard is restarting itself (e.g. after a torch wheel
+# install), set this flag so the lifespan exit handler knows to leave
+# the hermes subprocess alone. Without this, every torch restart
+# also killed hermes and forced the user to re-start it. The only way
+# to actually kill hermes is the explicit /api/hermes/kill endpoint
+# (the red Kill button) — a graceful dashboard shutdown for a wheel
+# swap is not a reason to take down the user's hermes session.
+_SUPPRESS_HERMES_STOP_ON_SHUTDOWN = False
 
 
 @app.get("/api/gpu/check")
@@ -1510,6 +1668,14 @@ def api_process_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
         state.process.start(settings)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    # Fresh pipeline = fresh hermes session (plan §5: one session per
+    # pipeline lifetime). Reset BEFORE the keepalive arm so the proxy
+    # module's next /v1/chat/completions call gets a new uuid.
+    _hermes_proxy_reset_session()
+    # Push the latest hermes config into the proxy's in-memory cache
+    # so the very first LLM request doesn't pay a disk read. The
+    # settings file is the source of truth; we re-push on every write.
+    _hermes_proxy_refresh_config(_read_settings().get("hermes"))
     # Spin up the Ollama keepalive pinger using the freshly-saved settings.
     # We do this AFTER the pipeline subprocess has been started so a slow
     # pinger startup can't delay the pipeline's first LLM call. The pinger
@@ -1522,10 +1688,12 @@ def api_process_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
         llm_keepaliver.update_from_settings(settings)
     except Exception:  # noqa: BLE001
         logger.exception("Failed to update llm keepalive from process start")
-    # Fire-and-forget warmup — covers the case where the user changed
-    # the model in the dropdown and clicked Start without first
-    # clicking Save.
-    _one_shot_keepalive_async(settings)
+    # Arm the warmup trigger: fire the dashboard's Ollama keepalive the
+    # instant the pipeline logs ``warmed up!`` (which is the deterministic
+    # signal that the pipeline's own startup warmup has just been
+    # processed by Ollama). Our subsequent ``/api/generate`` will be the
+    # next request Ollama handles, so ``options.num_ctx`` lands reliably.
+    _arm_warmup_trigger(settings)
     status = state.process.get_status()
     status["gpu_message"] = gpu_msg
     return {"ok": True, "status": status}
@@ -1534,6 +1702,9 @@ def api_process_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
 @app.post("/api/process/stop")
 def api_process_stop() -> dict[str, Any]:
     state.process.stop()
+    # Polite stop: do NOT reset the hermes session id. Per plan §6,
+    # polite stop preserves hermes context so the user can resume
+    # their conversation on the next Start with continuity.
     # Stop the Ollama keepalive pinger too — there's no pipeline to keep
     # the model warm for, and the user's next Start may pick a different
     # backend / model.
@@ -1550,18 +1721,411 @@ def api_process_restart(body: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(settings, dict):
         raise HTTPException(status_code=400, detail="Body must include 'settings' object")
     state.process.restart(settings)
+    # Fresh pipeline = fresh hermes session (same as Start above).
+    _hermes_proxy_reset_session()
+    _hermes_proxy_refresh_config(_read_settings().get("hermes"))
     # Same keepalive refresh as Start — the user may have edited
     # ``--llm-keepalive`` since the last start.
     try:
         llm_keepaliver.update_from_settings(settings)
     except Exception:  # noqa: BLE001
         logger.exception("Failed to update llm keepalive on restart")
+    # Arm the warmup trigger: same as Start — fire the dashboard's Ollama
+    # keepalive the instant the pipeline logs ``warmed up!``. Deterministic
+    # ordering with the pipeline's startup warmup, no polling, no fixed
+    # wait.
+    _arm_warmup_trigger(settings)
     return {"ok": True, "status": state.process.get_status()}
 
 
 @app.get("/api/process/status")
 def api_process_status() -> dict[str, Any]:
     return state.process.get_status()
+
+
+# ---- Hermes Agent ---------------------------------------------------------
+#
+# The Hermes tab surfaces one ``hermes gateway run --accept-hooks``
+# subprocess that exposes hermes-agent as an OpenAI-compatible HTTP
+# server (default port 8642). The dashboard owns the subprocess
+# lifecycle here; the pipeline then points its LLM slot at this same
+# URL via the "Hermes Agent" toggle in the LLM tab.
+#
+# All hermes-related routes live in this section. Anything that would
+# affect a different tab (e.g. injecting X-Hermes-Session-Id into the
+# pipeline env) lives in the corresponding tab's section instead.
+
+
+@app.get("/api/hermes/status")
+def api_hermes_status() -> dict[str, Any]:
+    """Snapshot of the hermes subprocess for the Hermes tab status panel.
+
+    Always fast — the heavy lifting (the ``/health`` probe) runs on a
+    background thread inside :class:`HermesProcess`.
+    """
+    settings = _read_settings() or {}
+    return state.hermes.get_status(settings)
+
+
+@app.post("/api/hermes/start")
+def api_hermes_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Start the hermes-agent subprocess.
+
+    Persists the (possibly just-generated) ``api_key`` to
+    ``web_ui_settings.json`` so subsequent restarts reuse the same key
+    and the pipeline's LLM slot can pick it up.
+
+    Body shape (all optional):
+        - ``port`` (int): override the api_server port. Default 8642.
+        - ``host`` (str): bind host. Default 127.0.0.1.
+        - ``model_name`` (str): the model name hermes should advertise
+          on ``/v1/models``. The user picks this inside hermes; the
+          dashboard just shows whatever is configured.
+
+    Returns ``{"ok": True, "status": <status dict>}`` on success, or
+    409 if hermes is already running.
+    """
+    current = _read_settings() or {}
+    # Apply any inline overrides from the body. Body wins over the
+    # persisted file so the UI can edit and Start without a Save click.
+    overrides: dict[str, Any] = {}
+    if isinstance(body, dict):
+        for k in ("port", "host", "model_name"):
+            v = body.get(k)
+            if v is not None:
+                overrides[k] = v
+    if overrides:
+        hermes_cfg = current.setdefault("hermes", {})
+        hermes_cfg.update(overrides)
+
+    # Generate a key if missing. The ``ensure_api_key`` helper mutates
+    # the dict in place and returns the value; we write the file right
+    # after so the key survives a process restart.
+    HermesProcess.ensure_api_key(current)
+    _write_settings(current)
+
+    try:
+        state.hermes.start(current)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except FileNotFoundError as e:
+        # The hermes CLI is not on PATH. Surface a clean 400 with the
+        # same message the user would see in the dashboard log so the
+        # UI can render it verbatim.
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    # Push the latest hermes config (host/port/api_key) into the
+    # proxy's in-memory cache so the next LLM request doesn't pay a
+    # disk read. We do this AFTER start so the subprocess is up
+    # before the proxy gets its first call.
+    _hermes_proxy_refresh_config(_read_settings().get("hermes"))
+    return {"ok": True, "status": state.hermes.get_status(current)}
+
+
+@app.post("/api/hermes/stop")
+def api_hermes_stop() -> dict[str, Any]:
+    """Politely stop the hermes subprocess (SIGTERM, escalating to SIGKILL).
+
+    No-op if not running. The hermes session context is preserved on
+    the hermes side (the api_server keeps the session in memory across
+    a stop+start only if the user picks the same session id on both
+    sides; the dashboard does that via the pipeline's
+    ``X-Hermes-Session-Id`` header).
+    """
+    state.hermes.stop()
+    return {"ok": True, "status": state.hermes.get_status(_read_settings() or {})}
+
+
+@app.post("/api/hermes/cancel")
+def api_hermes_cancel() -> dict[str, Any]:
+    """Send a cancel signal to the running hermes agent session.
+
+    Best-effort: if no run is in flight, hermes returns 404 and we
+    treat that as a no-op success. This is what the amber "Cancel
+    hermes" button maps to.
+    """
+    state.hermes.cancel()
+    return {"ok": True, "status": state.hermes.get_status(_read_settings() or {})}
+
+
+@app.post("/api/hermes/kill")
+def api_hermes_kill(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Hard-kill the hermes subprocess (SIGKILL, immediate).
+
+    Requires ``confirm: true`` in the body to prevent accidental
+    clicks. Herme context is lost; the next start gives hermes a
+    fresh process. The session id (if any) the pipeline was using
+    becomes stale — the next /v1/chat/completions call with that id
+    will return a 404 until the pipeline sends a fresh id.
+    """
+    confirm = bool((body or {}).get("confirm"))
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Set confirm=true in the body to kill hermes. This is a destructive action.",
+        )
+    state.hermes.kill()
+    # Hard kill: the old session id is orphaned on the hermes side
+    # (a fresh hermes process has no memory of it). Force a new id
+    # on the next request so the pipeline doesn't get spurious 404s
+    # until the user manually restarts.
+    _hermes_proxy_reset_session()
+    return {"ok": True, "status": state.hermes.get_status(_read_settings() or {})}
+
+
+@app.post("/api/hermes/reset_session")
+def api_hermes_reset_session() -> dict[str, Any]:
+    """Drop the dashboard's current hermes session id and mint a new one.
+
+    This is the practical "compress context" lever for v1: hermes-agent
+    does not currently expose a documented ``compress_context`` tool
+    (verified via search of NousResearch/hermes-agent docs, 2026-07),
+    so we can't auto-summarize the conversation. Rotating the session
+    id has the same effect from the user's perspective: the next LLM
+    call lands on a fresh hermes conversation slot, the robot starts
+    talking with no memory of the previous exchange.
+
+    Plan §5 reserved this slot for an auto-scheduler; for v1 the
+    rotation is manual via the Hermes tab's "Reset session" button.
+    When upstream ships a compress tool, swap this endpoint to call
+    it instead of (or in addition to) the id rotation.
+    """
+    _hermes_proxy_reset_session()
+    return {"ok": True, "session_id": _get_or_create_proxy_session_id()}
+
+
+def _get_or_create_proxy_session_id() -> str:
+    """Read the proxy's current session id without triggering a reset."""
+    from web_ui.hermes_proxy import get_or_create_session_id as _g
+    return _g()
+
+
+@app.get("/api/hermes/logs")
+def api_hermes_logs(since: int = Query(default=0, ge=0)) -> dict[str, Any]:
+    """Recent log lines from the hermes subprocess.
+
+    Polled by the Hermes tab's logs panel. The client passes the
+    last-seen ``index`` so reconnect-after-page-refresh catches up
+    cleanly without re-fetching the whole buffer.
+    """
+    return {"lines": state.hermes.get_log_buffer(since=since)}
+
+
+@app.put("/api/hermes/filler")
+def api_hermes_filler(body: dict[str, Any]) -> dict[str, Any]:
+    """Update the filler audio configuration.
+
+    Body shape:
+        - ``enabled`` (bool, optional): turn filler audio on/off.
+        - ``phrases`` (list[str], optional): one phrase per line. Up
+          to 10 phrases are kept; anything beyond that is dropped
+          silently. Empty strings are filtered.
+
+    Persists into ``web_ui_settings.json["hermes"]``. The pipeline
+    consumer (filler audio scheduler, task #9) reads this on every
+    turn.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+    current = _read_settings() or {}
+    hermes_cfg = current.setdefault("hermes", {})
+    if "enabled" in body:
+        hermes_cfg["filler_enabled"] = bool(body["enabled"])
+    if "phrases" in body:
+        raw = body["phrases"]
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="phrases must be a list of strings")
+        # Cap at 10, strip whitespace, drop empties. The textarea in
+        # the UI is also capped at 10 lines so this is defense in depth.
+        phrases = [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
+        hermes_cfg["filler_phrases"] = phrases[:10]
+    if "compress_context_every_n_turns" in body:
+        try:
+            n = int(body["compress_context_every_n_turns"])
+            # 0 disables the scheduler entirely; negative is invalid.
+            # We clamp to [0, 1000] so a typo can't turn the
+            # scheduler into a tight loop.
+            n = max(0, min(1000, n))
+            hermes_cfg["compress_context_every_n_turns"] = n
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="compress_context_every_n_turns must be a non-negative integer",
+            ) from None
+    _write_settings(current)
+    return {"ok": True, "filler": {
+        "enabled": hermes_cfg.get("filler_enabled", True),
+        "phrases": hermes_cfg.get("filler_phrases", []),
+        "compress_context_every_n_turns": hermes_cfg.get(
+            "compress_context_every_n_turns", 20
+        ),
+    }}
+
+
+@app.get("/api/hermes/filler")
+def api_hermes_get_filler() -> dict[str, Any]:
+    """Read the current filler audio configuration.
+
+    Used by the Hermes tab's filler section to render the textarea
+    + toggle on first load. Mirrors :func:`api_hermes_filler` so the
+    two endpoints can be polled independently.
+    """
+    current = _read_settings() or {}
+    hermes_cfg = current.get("hermes") or {}
+    return {
+        "enabled": hermes_cfg.get("filler_enabled", True),
+        "phrases": hermes_cfg.get("filler_phrases", []),
+        "compress_context_every_n_turns": hermes_cfg.get(
+            "compress_context_every_n_turns", 20
+        ),
+    }
+
+
+@app.get("/api/hermes/models")
+def api_hermes_models() -> dict[str, Any]:
+    """Proxy hermes's ``/v1/models`` so the UI can show the active model.
+
+    We can't just trust the user-typed ``model_name`` — hermes may
+    reject it (typo, model not loaded, etc.) and the api_server
+    echoes the resolved model on its own endpoint. The Hermes tab's
+    status panel shows whatever hermes actually reports.
+    """
+    import httpx
+    settings = _read_settings() or {}
+    cfg = HermesProcess.resolve_config(settings)
+    if not state.hermes.is_running():
+        return {"models": [], "error": "hermes not running"}
+    url = f"http://{cfg['host']}:{cfg['port']}/v1/models"
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            r = client.get(
+                url,
+                headers={"Authorization": f"Bearer {cfg['api_key']}"},
+            )
+        if not (200 <= r.status_code < 300):
+            return {
+                "models": [],
+                "error": f"HTTP {r.status_code}: {r.text[:200]}",
+            }
+        data = r.json()
+        items = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return {"models": [], "error": "unexpected response shape"}
+        models = []
+        for it in items:
+            if isinstance(it, dict) and isinstance(it.get("id"), str):
+                models.append({"id": it["id"]})
+        return {"models": models, "error": None}
+    except Exception as e:  # noqa: BLE001
+        return {"models": [], "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/hermes/chat")
+def api_hermes_chat(body: dict[str, Any]) -> Response:
+    """Stream a chat turn to hermes (SSE) for the Hermes tab's console.
+
+    Body shape:
+        - ``message`` (str, required): the user's text.
+        - ``session_id`` (str, optional): ``X-Hermes-Session-Id`` to
+          send with the request. Defaults to the dashboard-managed
+          session id (one per pipeline lifetime, see task #8).
+        - ``model`` (str, optional): model name to put in the
+          request body. Defaults to whatever the user has configured
+          in ``web_ui_settings.json["hermes"]["model_name"]``.
+
+    Returns a Server-Sent Events stream: each line is the literal
+    hermes SSE chunk (``data: {...}\\n\\n``), with the dashboard
+    adding ``event: chunk`` headers so the browser's ``EventSource``
+    can route them. The console panel renders each ``choices[0].delta.content``
+    in order to produce the streaming text effect.
+
+    The pipeline never uses this endpoint — it's the Hermes tab's
+    text-only console, separate from the voice path.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+    message = body.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise HTTPException(status_code=400, detail="Field 'message' is required")
+    settings = _read_settings() or {}
+    cfg = HermesProcess.resolve_config(settings)
+    if not state.hermes.is_running():
+        raise HTTPException(status_code=409, detail="Hermes is not running")
+    session_id = body.get("session_id") or cfg.get("api_key", "") + "-console"
+    if not isinstance(session_id, str) or not session_id:
+        session_id = "dashboard-console"
+    model = body.get("model") or cfg.get("model_name") or "hermes-agent"
+
+    import httpx
+
+    url = f"http://{cfg['host']}:{cfg['port']}/v1/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": message}],
+        "stream": True,
+    }
+
+    def _event_stream():
+        # Stream hermes's SSE chunks verbatim. If hermes returns a
+        # non-2xx (e.g. session expired), we surface the first 200
+        # chars of the body as an SSE error event so the UI can show
+        # a useful message instead of just hanging.
+        try:
+            with httpx.Client(timeout=None) as client:
+                with client.stream(
+                    "POST",
+                    url,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {cfg['api_key']}",
+                        "Content-Type": "application/json",
+                        "X-Hermes-Session-Id": session_id,
+                        "Accept": "text/event-stream",
+                    },
+                ) as r:
+                    if not (200 <= r.status_code < 300):
+                        body_snippet = r.read().decode("utf-8", "replace")[:200]
+                        yield (
+                            f"event: error\n"
+                            f"data: {{\"status\": {r.status_code}, "
+                            f"\"body\": {json.dumps(body_snippet)}}}\n\n"
+                        )
+                        return
+                    for line in r.iter_lines():
+                        if not line:
+                            # Blank line — SSE event boundary. We
+                            # forward as-is so the browser's
+                            # EventSource picks it up.
+                            yield "\n"
+                            continue
+                        # hermes SSE lines look like:
+                        #   data: {"id": "...", "choices": [...]}
+                        #   data: [DONE]
+                        # Forward verbatim. The UI parses ``data:``
+                        # lines to extract ``choices[0].delta.content``.
+                        yield line + "\n"
+                        # SSE event boundary (one blank line after the
+                        # ``data:`` line). EventSource consumes this
+                        # implicitly when our writes are well-formed.
+        except Exception as e:  # noqa: BLE001
+            yield (
+                f"event: error\n"
+                f"data: {{\"error\": {json.dumps(f'{type(e).__name__}: {e}')}}}\n\n"
+            )
+
+    # ``Response`` calls ``.render(content)`` which tries to ``.encode()`` the
+    # content; passing a generator crashes with ``'generator' object has no
+    # attribute 'encode'``. ``StreamingResponse`` is the right tool here --
+    # it forwards each yielded chunk to the client as-is, which is exactly
+    # what an SSE passthrough needs. (Same fix we applied to the proxy in
+    # ``hermes_proxy.py``.)
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable proxy buffering
+        },
+    )
 
 
 # ---- LLM keepalive (Ollama) ----------------------------------------------

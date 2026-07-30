@@ -172,17 +172,35 @@ def _torch_files_field(name: str) -> Optional[str]:
 def _torch_files_arch_list() -> list[str]:
     """Return the compiled CUDA arch list from the on-disk wheel.
 
-    PyTorch's compiled CUDA arch list isn't a Python-readable constant
-    in version.py — we read it from the .so files. We unpack the wheel's
-    ``lib/torch/lib/`` directory and look for the arch baked into the
-    library. The simplest reliable path: re-import torch in a fresh
-    subprocess to get its arch list. Falls back to [] otherwise.
+    Uses a fresh subprocess so the dashboard's in-process torch module
+    (which is sticky in ``sys.modules`` after a wheel swap) cannot
+    poison the answer. The subprocess prints the same thing
+    :func:`torch.cuda.get_arch_list` would print, but using the wheel
+    that's actually on disk right now.
+
+    Returns ``[]`` when the subprocess can't run (no torch, no CUDA,
+    timeout, etc.) — the caller then falls back to the in-process
+    arch list, which is the best signal we have when disk fails.
     """
-    # We can't easily get the arch list from disk without re-importing.
-    # The in-process version is the best signal we have. The disk version
-    # helper above is enough for the version check; archs derive from the
-    # in-process torch but that's good enough for the "supported" flag.
-    return []
+    code = (
+        "import torch as _t; "
+        "import sys; "
+        "_a = list(_t.cuda.get_arch_list()) if _t.cuda.is_available() else []; "
+        "print(','.join(_a))"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    out = (result.stdout or b"").decode("utf-8", "replace").strip()
+    if not out:
+        return []
+    return [a for a in out.split(",") if a]
 
 
 # --- nvidia-smi -----------------------------------------------------------

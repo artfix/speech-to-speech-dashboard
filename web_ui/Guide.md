@@ -384,3 +384,96 @@ Pascal (sm_61) cards; quality is still good but slightly below the
 1.7B. Worth switching to if you're CPU-constrained or want faster
 time-to-first-audio.
 
+
+# Connecting to Hermes Agent
+
+The dashboard can route the voice pipeline through [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+instead of Ollama. Hermes becomes the brain (skills, memory, Home
+Assistant control); the dashboard's existing pipeline stays the body
+and voice. You can still swap STT/TTS/VAD freely — only the LLM slot
+changes.
+
+## 0.4.0 (this version)
+
+- **Hermes tab** in the sidebar: start, polite-stop, cancel, kill, plus
+  a text console and a filler-phrase config (10-line box).
+- **LLM tab → "Backend type"** dropdown: pick *Hermes Agent* and the
+  dashboard auto-fills the LLM URL with the dashboard's reverse-proxy
+  base URL (`http://<dashboard-host>:8050/hermes-proxy/v1`) and the
+  api_key from the Hermes tab.
+- **Reverse proxy** lives inside the dashboard's own uvicorn — no
+  extra port, no extra process, no extra dependency. Resource cost is
+  negligible: it forwards bytes + injects two headers
+  (`Authorization`, `X-Hermes-Session-Id`).
+- **Session id** is one per pipeline lifetime. New uuid on pipeline
+  start / restart / kill. Polite stop and cancel preserve the id so
+  the conversation continues on the next start.
+
+## First-time setup
+
+1. Install hermes-agent and pick a model inside hermes (the model is
+   picked by hermes, not by the dashboard — see
+   `ollama launch hermes` or `hermes` in your terminal).
+2. Open the dashboard, click **Hermes** in the sidebar.
+3. Click **Start**. The dashboard spawns `hermes gateway run
+   --accept-hooks` on `127.0.0.1:8642` with an auto-generated API key
+   persisted in `web_ui_settings.json["hermes"]["api_key"]`.
+4. Wait for the badge to turn **● running** (green dot).
+5. Open the **LLM** tab, change **Backend type** from *Direct backend*
+   to *Hermes Agent*. The URL and api_key fields auto-fill. Pick
+   the same model name you configured in hermes.
+6. **Start Pipeline** (Control tab).
+
+The pipeline now talks to the dashboard's `/hermes-proxy/v1/*`, which
+forwards to hermes with the right session header. Voice → STT → LLM
+(hermes) → TTS → speaker, just like before.
+
+## How the proxy works (one diagram)
+
+```
+pipeline (LLM slot)
+   │ POST /v1/chat/completions
+   ▼
+http://127.0.0.1:8050/hermes-proxy/v1/chat/completions   ← dashboard uvicorn
+   │ adds Authorization: Bearer <api_key>
+   │ adds X-Hermes-Session-Id: <uuid>
+   │ forwards to:
+   ▼
+http://127.0.0.1:8642/v1/chat/completions              ← hermes subprocess
+```
+
+The proxy is on the hot path of every LLM token chunk. To keep it
+cheap: the hermes config block is cached in memory and only refreshed
+when the dashboard writes it (no per-request disk I/O). The session
+id is held in a slot — no allocation per request.
+
+## Common Hermes tasks
+
+- **Reset the conversation without killing hermes:** click
+  **↻ Reset session** in the Emergency section of the Hermes tab.
+  Mints a new session id; hermes treats the next request as a fresh
+  conversation. Faster than kill+start, no subprocess churn.
+- **Stop a long-running tool mid-flight:** click **⏸ Cancel**. Sends
+  `/v1/runs/stop` to hermes. The session id stays; you can resume.
+- **Hard kill (last resort):** click **✖ Kill Hermes**, confirm.
+  Herme context lost; pipeline id resets automatically.
+- **Open hermes's own dashboard:** the **↗ Open Hermes Dashboard**
+  link points at the upstream web UI on port 9119.
+
+## Filler audio
+
+When hermes is mid-tool-call (>1.5s without producing text), the
+robot can play a short phrase so the user knows it's still working.
+Uses the pipeline's existing TTS — no extra config. Edit the
+10-line box on the Hermes tab, or toggle the checkbox off if you
+don't want it.
+
+## Out of scope (deferred)
+
+- **Voice-activated cancel** ("stop", "halt"): discussed and dropped
+  for v1 — would require either editing `src/speech_to_speech/` (forbidden)
+  or running a separate wake-word model. May return later.
+- **Auto `compress_context` scheduler:** hermes-agent does not
+  currently expose a documented `compress_context` tool (verified
+  2026-07). When upstream ships one, swap the *Reset session*
+  endpoint to call it instead of (or in addition to) the id rotation.

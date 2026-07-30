@@ -1,11 +1,5 @@
 """Background pinger that keeps an Ollama model loaded between user turns.
 
-DEPRECATED since 0.3.2 — replaced by the one-shot keep_alive request that
-``web_ui.server`` fires at Save / Start time (see
-``POST /api/ollama/keepalive`` in ``server.py``). The pinger is kept in
-place for rollback: a one-line change in ``server.py`` is enough to
-re-enable it. No new callers should import from this module.
-
 Ollama unloads a model from VRAM after ``keep_alive`` of inactivity (default
 5 minutes). For a low-latency voice-agent pipeline this is fatal: the next
 user utterance after a 5-minute pause would pay the full ~20s reload cost
@@ -20,6 +14,12 @@ deadline). The request body includes ``keep_alive: <interval>`` so each
 ping resets Ollama's idle timer to the user's chosen value. ``max_tokens=1``
 keeps the ping cheap — we discard the response.
 
+This pinger is complementary to the one-shot warmup that
+``web_ui/server.py`` fires at Start / Restart time (see
+``POST /api/ollama/keepalive``): the warmup loads the model at the user's
+``num_ctx`` and arms the initial ``keep_alive`` timer; this pinger then
+keeps that timer fresh until the next Start / Restart re-arms it.
+
 CLI flags reach this code via the dashboard's ``web_ui_settings.json``
 through the settings save / pipeline start hooks in ``web_ui/server.py``.
 This module is intentionally self-contained: no FastAPI imports, no
@@ -32,7 +32,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -77,6 +77,13 @@ class KeepaliveConfig:
     keepalive: str
     # Optional override for the ping cadence. Mostly useful for tests.
     ping_interval_s: Optional[float] = None
+    # Optional context-window cap (``options.num_ctx``). When set, every
+    # ping includes it so the model's loaded KV-cache stays pinned to the
+    # user's chosen size (Ollama otherwise falls back to the model's
+    # native default, e.g. 131072 for gemma4). Mirrors the parsing in
+    # ``web_ui/server.py``'s ``_one_shot_keepalive_async`` so the two
+    # keepalive paths agree on the value.
+    num_ctx: Optional[int] = None
 
 
 @dataclass
@@ -232,6 +239,9 @@ class LLMKeepAliver:
         - ``--responses-api-base-url`` for the Ollama endpoint.
         - ``--llm-keepalive`` for the keepalive string (dashboard-only key,
           see ``web_ui.settings_schema._NON_FORWARDED``).
+        - ``--responses-api-num-ctx`` for the optional context-window cap.
+          Mirrors the parsing in ``web_ui.server._one_shot_keepalive_async``
+          so the pinger and the one-shot warmup agree on the value.
 
         Only acts if the keepalive is set AND ``--llm-backend`` is one of
         the OpenAI-compat backends (``chat-completions`` /
@@ -257,12 +267,27 @@ class LLMKeepAliver:
             logger.debug("llm_keepalive: --model-name is empty, skipping")
             self.stop()
             return
+        # Same ``--responses-api-num-ctx`` parsing as
+        # ``web_ui.server._one_shot_keepalive_async``: missing / empty /
+        # non-int / non-positive all collapse to ``None`` so the pinger
+        # omits the ``options`` block entirely when the user hasn't picked
+        # a value.
+        num_ctx_raw = settings.get("--responses-api-num-ctx")
+        num_ctx: Optional[int] = None
+        if num_ctx_raw is not None and num_ctx_raw != "":
+            try:
+                n = int(num_ctx_raw)
+                if n > 0:
+                    num_ctx = n
+            except (TypeError, ValueError):
+                pass
         self.start(
             KeepaliveConfig(
                 base_url=base_url,
                 api_key=api_key,
                 model_name=model_name,
                 keepalive=keepalive,
+                num_ctx=num_ctx,
             )
         )
 
@@ -304,10 +329,34 @@ class LLMKeepAliver:
             # Tests / power-user override.
             ping_interval_s = config.ping_interval_s
 
+        # Cap our ping interval at Ollama's own default keep_alive. The
+        # pipeline's per-turn /v1/chat/completions requests don't carry
+        # keep_alive in their extra_body, so until our pinger arms the
+        # user's value Ollama applies its 5-minute default and unloads
+        # the model. Without this cap a user picking --llm-keepalive
+        # 30m would set our ping to 15 min — but Ollama's 5-min default
+        # would still trip in between, dropping the model silently.
+        # Clamping to 5 min keeps us strictly ahead of any unload the
+        # server might decide on its own. The user's chosen keep_alive
+        # is still what gets sent to Ollama in each ping body — the
+        # cap only affects how often we refresh.
+        ping_interval_s = min(ping_interval_s, 300.0)
+
         logger.info(
             "llm_keepalive: runner loop started, ping_interval=%.1fs",
             ping_interval_s,
         )
+
+        # Fire the first ping immediately on start. Without this, the
+        # model sits at Ollama's default keep_alive (5 min) from
+        # pipeline-start until our first scheduled ping — which for
+        # --llm-keepalive 30m is 15 min away. Arming the user's value
+        # right away is what makes the chosen keepalive actually take
+        # effect.
+        if not stop_event.is_set():
+            self._do_ping(config)
+            with self._lock:
+                self._status.next_ping_at = time.time() + ping_interval_s
 
         # Sleep in small slices so stop() takes effect promptly. The
         # 1-second slice is fine for a sub-minute ping cadence and still
@@ -326,22 +375,35 @@ class LLMKeepAliver:
         logger.info("llm_keepalive: runner loop exiting (stop signal)")
 
     def _do_ping(self, config: KeepaliveConfig) -> None:
-        """Send one keepalive ping to Ollama. Updates status under the lock."""
-        # The request body follows the OpenAI Chat Completions shape; Ollama
-        # accepts ``keep_alive`` as an OpenAI-compat extension. ``max_tokens=1``
-        # forces a minimal response so we don't burn latency or tokens.
-        body = {
-            "model": config.model_name,
-            "messages": [{"role": "user", "content": "."}],
-            "stream": False,
-            "max_tokens": 1,
-            "keep_alive": config.keepalive,
-        }
+        """Send one keepalive ping to Ollama. Updates status under the lock.
+
+        We use the OpenAI-compat ``/v1/chat/completions`` endpoint with
+        ``keep_alive`` in the body. Ollama honours ``keep_alive`` on this
+        path (unlike ``options.num_ctx`` which it silently drops), so each
+        ping resets the model's unload timer to the user's chosen value.
+        ``max_tokens=1`` keeps the request cheap — Ollama returns ~empty
+        content once the model is loaded and we discard the response.
+
+        The user-supplied ``num_ctx`` is logged here for diagnostics but
+        intentionally NOT included in the ping body: sending it would
+        require the Ollama-native ``/api/chat`` endpoint, which takes
+        26 s on a cold load (timeout exceeded) and pollutes conversation
+        state with an empty user message. The ``num_ctx`` value is pinned
+        by the one-shot warmup at Start / Restart time (``api_ollama_
+        keepalive`` in ``web_ui/server.py``), so by the time the pinger
+        fires the model is already loaded at the right context.
+        """
         headers = {
             "Authorization": f"Bearer {config.api_key}",
             "Content-Type": "application/json",
         }
-        # /chat/completions sits under the same /v1 base the user configured.
+        body: dict[str, Any] = {
+            "model": config.model_name,
+            "messages": [{"role": "user", "content": ""}],
+            "max_tokens": 1,
+            "stream": False,
+            "keep_alive": config.keepalive,
+        }
         url = config.base_url.rstrip("/") + "/chat/completions"
         try:
             with httpx.Client(timeout=_PING_TIMEOUT_S) as client:
@@ -365,9 +427,10 @@ class LLMKeepAliver:
                 self._status.ping_failures += 1
         if ok:
             logger.debug(
-                "llm_keepalive: ping ok model=%r keep_alive=%r",
+                "llm_keepalive: ping ok model=%r keep_alive=%r (num_ctx=%r pinned at warmup)",
                 config.model_name,
                 config.keepalive,
+                config.num_ctx,
             )
         else:
             logger.warning("llm_keepalive: ping failed: %s", err)
