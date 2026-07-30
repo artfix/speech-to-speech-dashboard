@@ -195,7 +195,7 @@
         position: relative;
     }
     .feature-block.new::before {
-        content: "NEW in v0.3.0";
+        content: "NEW in v0.4.0";
         position: absolute;
         top: -10px; left: 24px;
         background: var(--accent);
@@ -263,13 +263,15 @@
 
     <section class="hero">
         <h1>speech-to-speech</h1>
-        <p class="tagline">An open, real-time voice agent pipeline with a browser dashboard.<br>Now with a qwen3-TTS voice library (9 presets + per-language pinning) and 18 cyberpunk themes.</p>
+        <p class="tagline">An open, real-time voice agent pipeline with a browser dashboard.<br>Now with Hermes Agent integration (proxy, tab, LLM read-timeout knob) and a Pascal GPU restart-loop fix.</p>
         <div class="badges">
-            <span class="badge green">v0.3.0</span>
+            <span class="badge green">v0.4.1</span>
             <span class="badge cyan">VAD → STT → LLM → TTS</span>
             <span class="badge pink">Realtime WebSocket</span>
+            <span class="badge">Hermes Agent</span>
             <span class="badge">6 TTS backends</span>
             <span class="badge">9 qwen3 voices</span>
+            <span class="badge">18 themes</span>
             <span class="badge">Linux / Windows</span>
         </div>
         <div class="cta-row">
@@ -297,7 +299,7 @@
         <div class="pipe-step">
             <span class="tag">LLM</span>
             <div class="job">thinks</div>
-            <div class="model">local transformers<br>mlx-lm<br>Ollama · vLLM<br>OpenAI · HF Inference</div>
+            <div class="model">local transformers<br>mlx-lm<br>Ollama · vLLM<br>OpenAI · HF Inference<br><strong style="color: var(--accent-2);">Hermes Agent</strong></div>
         </div>
         <div class="pipe-arrow">→</div>
         <div class="pipe-step">
@@ -334,6 +336,40 @@
             <h4>🚀 Start / Stop / Restart / Shutdown</h4>
             <p>One click to start, one click to kill. Shutdown closes both the pipeline and the dashboard. Cross-platform: <code>CREATE_NEW_PROCESS_GROUP</code> on Windows, <code>SIGTERM</code>+<code>SIGKILL</code> on Linux.</p>
         </div>
+        <div class="card">
+            <h4>🤖 Hermes Agent tab</h4>
+            <p>New tab for <a href="https://hermes-agent.nousresearch.com/" target="_blank" rel="noopener">Hermes Agent</a> — start/stop the Hermes subprocess from the dashboard, view live status, and chat with the agent through a reverse proxy at <code>/hermes-proxy/v1/*</code>. Switching <code>--llm-backend-type</code> to <code>hermes</code> wires the pipeline straight into Hermes's OpenAI-compatible API on port 8642.</p>
+        </div>
+        <div class="card">
+            <h4>⏱️ Hermes LLM read-timeout knob</h4>
+            <p>The pipeline's hardcoded 20 s OpenAI read timeout made Hermes look "stuck in a loop" on long passages. The dashboard now ships a <code>hermes.read_timeout_s</code> setting (<code>0</code> = wait forever). Implemented as a zero-touch monkey-patch loaded into the venv via <code>sitecustomize.py</code> on pipeline startup — no edits to <code>src/</code>.</p>
+        </div>
+    </div>
+
+    <h2>What's new in v0.4.0</h2>
+
+    <div class="feature-block new">
+        <h3>🤖 Hermes Agent integration</h3>
+        <p><a href="https://hermes-agent.nousresearch.com/" target="_blank" rel="noopener">Hermes Agent</a> (Nous Research) is now a first-class LLM backend option. The dashboard owns the Hermes subprocess via <code>web_ui/hermes_manager.py</code> (start/stop/restart, log capture, exit codes) and exposes Hermes through a reverse proxy at <code>/hermes-proxy/v1/*</code> so the browser doesn't have to whitelist <code>http://127.0.0.1:8642</code>. The API key is read from Hermes's own config and auto-injected as a Bearer token by the proxy.</p>
+        <p>A dedicated <strong>Hermes tab</strong> in the dashboard shows live status, the currently loaded model (polled every 5 s from <code>/v1/models</code>), and an embedded chat console for ad-hoc testing. In <code>web_ui_settings.json</code>, switching <code>--llm-backend-type</code> to <code>hermes</code> rewires the pipeline to talk to Hermes and swaps the editable <code>--model-name</code> field for a read-only label — because the model is chosen via <code>hermes model</code> in the terminal, not the dashboard.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>⏱️ Hermes LLM read-timeout knob (v0.4.1)</h3>
+        <p>Hermes repeatedly looked "stuck in a loop" because the pipeline hardcodes a 20 s read timeout (<code>src/.../base_openai_compatible_language_model.py:140</code>). When the LLM takes longer than 20 s on a long passage, the OpenAI client times out and the pipeline emits the canned <code>"Wow I'm a bit slow today, could you repeat that?"</code> fallback — which then gets spoken by the TTS. Every subsequent slow turn produces the same canned line.</p>
+        <p>New setting <code>hermes.read_timeout_s</code> on the Hermes tab (<code>0</code> = wait forever, <code>&gt;0</code> = read timeout in seconds). The dashboard drops a tiny <code>sitecustomize.py</code> into the venv's <code>site-packages</code> on pipeline start that auto-imports a monkey-patch wrapping the OpenAI SDK's <code>Completions.create</code> and <code>Responses.create</code> — replacing the hardcoded 20 s with the configured value. Cleanup runs on pipeline stop. Zero edits to <code>src/speech_to_speech/</code>.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>🛠️ Pascal GPU restart-loop fix</h3>
+        <p>On Pascal (<code>sm_61</code>) GPUs, clicking <strong>Start Pipeline</strong> on the Control tab triggered an infinite restart loop: torch's CUDA context blew up on init, the watchdog saw a non-zero exit, relaunched, watched it die again, and the only way out was killing the dashboard.</p>
+        <p>Four-file fix: <code>web_ui/gpu.py</code> now detects Pascal and pins torch to the bundled CPU-friendly wheel (<code>torch==2.4.1+cpu</code>) on install, plus a runtime CPU fallback for any other CUDA init failure. <code>process_manager.py</code> tracks the restart count and surfaces it on the Control tab so you can see the loop in the dashboard. <code>qwentts_installer.py</code> defers its heavy CUDA work until the first TTS request instead of at pipeline start (so a CUDA-init failure no longer kills startup before the pipeline ever gets a chance to run). Startup logs now print a one-line <code>"GPU init failed, falling back to CPU (…)"</code> banner so the cause is obvious.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>🔌 Ollama LLM keepalive</h3>
+        <p><code>web_ui/llm_keepalive.py</code> — a tiny thread-safe helper that pings the configured Ollama endpoint every <code>keepalive_interval_s</code> (default 60 s) so the model stays loaded in VRAM between turns. Without it, Ollama unloads the model after 5 minutes of idle, and the next user turn pays a multi-second cold-load penalty.</p>
+        <p>The dashboard's existing Settings form renders the interval field automatically (auto-introspection, no JS special cases). Disable it by setting the interval to <code>0</code>. Hermes backends are skipped automatically — Hermes manages its own model lifecycle.</p>
     </div>
 
     <h2>What's new in v0.3.0</h2>
@@ -419,6 +455,11 @@ start_web_ui.bat</code></pre>
         <tr><td><code>web_ui/qwentts_voice_library.py</code></td><td>qwen3-TTS preset library + reference voices + WAV test synthesis</td></tr>
         <tr><td><code>web_ui/qwentts_installer.py</code></td><td>Auto-installs the bundled Pascal wheel on <code>sm_61</code> GPUs and patches the venv binding for the ABI v1 realtime crash</td></tr>
         <tr><td><code>web_ui/wheels/</code></td><td>Bundled CUDA wheels (currently: <code>qwentts_cpp_python-0.3.1</code> for Pascal <code>sm_61</code>)</td></tr>
+        <tr><td><code>web_ui/hermes_manager.py</code></td><td>Hermes Agent subprocess lifecycle (start / stop / restart, log capture, exit codes)</td></tr>
+        <tr><td><code>web_ui/hermes_proxy.py</code></td><td>Reverse proxy at <code>/hermes-proxy/v1/*</code> so the browser doesn't need to allowlist <code>http://127.0.0.1:8642</code>; injects the Hermes API key as a Bearer token</td></tr>
+        <tr><td><code>web_ui/llm_keepalive.py</code></td><td>Background thread that pings the configured Ollama endpoint so the model stays loaded in VRAM between turns</td></tr>
+        <tr><td><code>web_ui/gpu.py</code></td><td>Pascal detection + CPU torch fallback to keep the pipeline startable on <code>sm_61</code> GPUs</td></tr>
+        <tr><td><code>web_ui/_openai_timeout_patch.py</code></td><td>Zero-touch OpenAI-SDK monkey-patch (Hermes-only) injected via <code>sitecustomize.py</code> on pipeline start, removed on stop</td></tr>
         <tr><td><code>demo/</code></td><td>The Reachy Mini conversation UI (orb, settings, tools, WebRTC)</td></tr>
         <tr><td><code>src/speech_to_speech/TTS/</code></td><td>All six TTS backends, including <code>chatterbox_tts_handler.py</code> and <code>qwen3_tts_handler.py</code></td></tr>
         <tr><td><code>src/speech_to_speech/api/openai_realtime/</code></td><td>The Realtime WebSocket / WebRTC server</td></tr>
