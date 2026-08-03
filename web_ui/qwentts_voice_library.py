@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 import time
 import wave
 from dataclasses import dataclass
@@ -304,8 +303,9 @@ def synthesize_qwen3_test(
                 if hasattr(ref_audio_24k, "ndim") and ref_audio_24k.ndim > 1:
                     ref_audio_24k = ref_audio_24k.mean(axis=1).astype(np.float32)
                 if sr != _NATIVE_SAMPLE_RATE:
-                    from scipy.signal import resample_poly  # type: ignore[import-not-found]
                     from math import gcd
+
+                    from scipy.signal import resample_poly  # type: ignore[import-not-found]
                     g = gcd(sr, _NATIVE_SAMPLE_RATE)
                     ref_audio_24k = resample_poly(
                         ref_audio_24k,

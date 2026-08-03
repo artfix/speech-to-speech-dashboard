@@ -37,6 +37,9 @@ from speech_to_speech.arguments_classes.mlx_audio_whisper_arguments import (
 )
 from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
 from speech_to_speech.arguments_classes.paraformer_stt_arguments import ParaformerSTTHandlerArguments
+from speech_to_speech.arguments_classes.parakeet_onnx_arguments import (
+    ParakeetOnnxSTTHandlerArguments,
+)
 from speech_to_speech.arguments_classes.parakeet_tdt_arguments import (
     ParakeetTDTSTTHandlerArguments,
 )
@@ -101,6 +104,7 @@ class ParsedArguments:
     faster_whisper_stt_handler_kwargs: FasterWhisperSTTHandlerArguments
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments
+    parakeet_onnx_stt_handler_kwargs: ParakeetOnnxSTTHandlerArguments
     language_model_handler_kwargs: LanguageModelHandlerArguments
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments
     chat_tts_handler_kwargs: ChatTTSHandlerArguments
@@ -161,6 +165,7 @@ def parse_arguments() -> ParsedArguments:
             FasterWhisperSTTHandlerArguments,
             MLXAudioWhisperSTTHandlerArguments,
             ParakeetTDTSTTHandlerArguments,
+            ParakeetOnnxSTTHandlerArguments,
             _lm_class,
             ChatTTSHandlerArguments,
             FacebookMMSTTSHandlerArguments,
@@ -191,6 +196,7 @@ def parse_arguments() -> ParsedArguments:
         faster_whisper_stt_handler_kwargs=by_type[FasterWhisperSTTHandlerArguments],
         mlx_audio_whisper_stt_handler_kwargs=by_type[MLXAudioWhisperSTTHandlerArguments],
         parakeet_tdt_stt_handler_kwargs=by_type[ParakeetTDTSTTHandlerArguments],
+        parakeet_onnx_stt_handler_kwargs=by_type[ParakeetOnnxSTTHandlerArguments],
         language_model_handler_kwargs=by_type.get(LanguageModelHandlerArguments, LanguageModelHandlerArguments()),
         # The OpenAI-compatible slot holds whichever class was registered:
         # ChatCompletions... (a subclass) for chat-completions, else ResponsesApi....
@@ -297,6 +303,7 @@ def prepare_all_args(
     faster_whisper_stt_handler_kwargs: FasterWhisperSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    parakeet_onnx_stt_handler_kwargs: ParakeetOnnxSTTHandlerArguments,
     language_model_handler_kwargs: LanguageModelHandlerArguments,
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments,
     chat_tts_handler_kwargs: ChatTTSHandlerArguments,
@@ -328,6 +335,7 @@ def prepare_all_args(
     rename_args(paraformer_stt_handler_kwargs, "paraformer_stt")
     rename_args(mlx_audio_whisper_stt_handler_kwargs, "mlx_audio_whisper")
     rename_args(parakeet_tdt_stt_handler_kwargs, "parakeet_tdt")
+    rename_args(parakeet_onnx_stt_handler_kwargs, "parakeet_onnx")
     rename_args(language_model_handler_kwargs, "llm")
     rename_args(responses_api_language_model_handler_kwargs, "responses_api")
     rename_args(chat_tts_handler_kwargs, "chat_tts")
@@ -375,6 +383,7 @@ def _build_pipeline_handlers(
     paraformer_stt_handler_kwargs: ParaformerSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    parakeet_onnx_stt_handler_kwargs: ParakeetOnnxSTTHandlerArguments,
     language_model_handler_kwargs: LanguageModelHandlerArguments,
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments,
     chat_tts_handler_kwargs: ChatTTSHandlerArguments,
@@ -419,6 +428,7 @@ def _build_pipeline_handlers(
         paraformer_stt_handler_kwargs,
         mlx_audio_whisper_stt_handler_kwargs,
         parakeet_tdt_stt_handler_kwargs,
+        parakeet_onnx_stt_handler_kwargs,
     )
 
     lm = get_llm_handler(
@@ -465,6 +475,7 @@ def _build_realtime_pipeline_unit(
     paraformer_stt_handler_kwargs: ParaformerSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    parakeet_onnx_stt_handler_kwargs: ParakeetOnnxSTTHandlerArguments,
     language_model_handler_kwargs: LanguageModelHandlerArguments,
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments,
     chat_tts_handler_kwargs: ChatTTSHandlerArguments,
@@ -489,6 +500,7 @@ def _build_realtime_pipeline_unit(
     paraformer_kw = deepcopy(paraformer_stt_handler_kwargs)
     mlx_audio_whisper_kw = deepcopy(mlx_audio_whisper_stt_handler_kwargs)
     parakeet_kw = deepcopy(parakeet_tdt_stt_handler_kwargs)
+    parakeet_onnx_kw = deepcopy(parakeet_onnx_stt_handler_kwargs)
     lm_kw = deepcopy(language_model_handler_kwargs)
     responses_api_kw = deepcopy(responses_api_language_model_handler_kwargs)
     chat_tts_kw = deepcopy(chat_tts_handler_kwargs)
@@ -564,6 +576,7 @@ def _build_realtime_pipeline_unit(
         paraformer_stt_handler_kwargs=paraformer_kw,
         mlx_audio_whisper_stt_handler_kwargs=mlx_audio_whisper_kw,
         parakeet_tdt_stt_handler_kwargs=parakeet_kw,
+        parakeet_onnx_stt_handler_kwargs=parakeet_onnx_kw,
         language_model_handler_kwargs=lm_kw,
         responses_api_language_model_handler_kwargs=responses_api_kw,
         chat_tts_handler_kwargs=chat_tts_kw,
@@ -602,6 +615,7 @@ def build_pipeline(
     paraformer_stt_handler_kwargs: ParaformerSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    parakeet_onnx_stt_handler_kwargs: ParakeetOnnxSTTHandlerArguments,
     language_model_handler_kwargs: LanguageModelHandlerArguments,
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments,
     chat_tts_handler_kwargs: ChatTTSHandlerArguments,
@@ -665,6 +679,7 @@ def build_pipeline(
                 paraformer_stt_handler_kwargs=paraformer_stt_handler_kwargs,
                 mlx_audio_whisper_stt_handler_kwargs=mlx_audio_whisper_stt_handler_kwargs,
                 parakeet_tdt_stt_handler_kwargs=parakeet_tdt_stt_handler_kwargs,
+                parakeet_onnx_stt_handler_kwargs=parakeet_onnx_stt_handler_kwargs,
                 language_model_handler_kwargs=language_model_handler_kwargs,
                 responses_api_language_model_handler_kwargs=responses_api_language_model_handler_kwargs,
                 chat_tts_handler_kwargs=chat_tts_handler_kwargs,
@@ -750,6 +765,7 @@ def build_pipeline(
         paraformer_stt_handler_kwargs=paraformer_stt_handler_kwargs,
         mlx_audio_whisper_stt_handler_kwargs=mlx_audio_whisper_stt_handler_kwargs,
         parakeet_tdt_stt_handler_kwargs=parakeet_tdt_stt_handler_kwargs,
+        parakeet_onnx_stt_handler_kwargs=parakeet_onnx_stt_handler_kwargs,
         language_model_handler_kwargs=language_model_handler_kwargs,
         responses_api_language_model_handler_kwargs=responses_api_language_model_handler_kwargs,
         chat_tts_handler_kwargs=chat_tts_handler_kwargs,
@@ -774,6 +790,7 @@ def get_stt_handler(
     paraformer_stt_handler_kwargs: ParaformerSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    parakeet_onnx_stt_handler_kwargs: ParakeetOnnxSTTHandlerArguments,
 ) -> BaseHandler[STTIn, STTOut]:
     from speech_to_speech.STT.base_stt_handler import BaseSTTHandler
 
@@ -857,9 +874,29 @@ def get_stt_handler(
                 setup_kwargs=setup_kwargs,
             )
         )
+    elif module_kwargs.stt == "parakeet-onnx":
+        from speech_to_speech.STT.parakeet_onnx_handler import ParakeetOnnxSTTHandler
+
+        # Per-backend --parakeet-onnx-device wins; fall back to the global
+        # --device flag (if the user set it explicitly), then "auto".
+        per_backend_device = parakeet_onnx_stt_handler_kwargs.parakeet_onnx_device
+        setup_kwargs = {
+            **vars(parakeet_onnx_stt_handler_kwargs),
+            "device": per_backend_device or module_kwargs.device or "auto",
+        }
+
+        return with_speculative_turns(
+            ParakeetOnnxSTTHandler(
+                stop_event,
+                queue_in=spoken_prompt_queue,
+                queue_out=text_prompt_queue,
+                setup_kwargs=setup_kwargs,
+            )
+        )
     else:
         raise ValueError(
-            "The STT should be either whisper, whisper-mlx, mlx-audio-whisper, faster-whisper, parakeet-tdt, or paraformer."
+            "The STT should be either whisper, whisper-mlx, mlx-audio-whisper, faster-whisper, "
+            "parakeet-tdt, parakeet-onnx, or paraformer."
         )
 
 
@@ -1028,6 +1065,7 @@ def main() -> None:
         args.faster_whisper_stt_handler_kwargs,
         args.mlx_audio_whisper_stt_handler_kwargs,
         args.parakeet_tdt_stt_handler_kwargs,
+        args.parakeet_onnx_stt_handler_kwargs,
         args.language_model_handler_kwargs,
         args.responses_api_language_model_handler_kwargs,
         args.chat_tts_handler_kwargs,
@@ -1073,6 +1111,7 @@ def main() -> None:
         args.paraformer_stt_handler_kwargs,
         args.mlx_audio_whisper_stt_handler_kwargs,
         args.parakeet_tdt_stt_handler_kwargs,
+        args.parakeet_onnx_stt_handler_kwargs,
         args.language_model_handler_kwargs,
         args.responses_api_language_model_handler_kwargs,
         args.chat_tts_handler_kwargs,

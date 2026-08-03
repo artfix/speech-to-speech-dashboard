@@ -47,14 +47,12 @@ agree on it across restarts.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import queue
 import re
 import secrets
 import subprocess
-import sys
 import threading
 import time
 from collections import deque

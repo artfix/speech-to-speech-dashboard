@@ -55,6 +55,9 @@ from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
 from speech_to_speech.arguments_classes.paraformer_stt_arguments import (
     ParaformerSTTHandlerArguments,
 )
+from speech_to_speech.arguments_classes.parakeet_onnx_arguments import (
+    ParakeetOnnxSTTHandlerArguments,
+)
 from speech_to_speech.arguments_classes.parakeet_tdt_arguments import (
     ParakeetTDTSTTHandlerArguments,
 )
@@ -288,6 +291,12 @@ STT_BACKENDS: list[tuple[str, type, str, dict[str, Any]]] = [
         ParakeetTDTSTTHandlerArguments,
         "Parakeet TDT (default)",
         {"field": "stt", "equals": "parakeet-tdt"},
+    ),
+    (
+        "parakeet-onnx",
+        ParakeetOnnxSTTHandlerArguments,
+        "Parakeet ONNX (onnx-asr, CPU/CUDA only)",
+        {"field": "stt", "equals": "parakeet-onnx"},
     ),
     (
         "paraformer",

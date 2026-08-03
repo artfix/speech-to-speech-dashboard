@@ -118,11 +118,64 @@ Silero VAD v5 detects when the user is speaking and when they're silent. The pip
 | Backend | When to pick it |
 |---|---|
 | `parakeet-tdt` (default) | Multilingual, 25 European languages, runs on CUDA / CPU / Apple Silicon. Best general choice. |
+| `parakeet-onnx` | NVIDIA Parakeet TDT via `onnx-asr` (pure ONNX, no PyTorch). Three variants: `v2` (English-only), `v3` (multilingual 25 EU langs, default), `v3sq` (int8 SmoothQuant, best for long audio). CPU / CUDA only — Apple Silicon users keep `parakeet-tdt`. Requires the `parakeet-onnx` pip extra. |
 | `whisper` | Hugging Face Transformers Whisper. Heavier than Parakeet but very accurate. |
 | `whisper-mlx` | Apple Silicon only. Fast on M-series. |
 | `mlx-audio-whisper` | Apple Silicon only. Uses `mlx-audio`. |
 | `faster-whisper` | CTranslate2, CPU-friendly. Requires the `faster-whisper` pip extra. |
 | `paraformer` | FunASR's Paraformer. Chinese-oriented by default. Requires the `paraformer` pip extra. |
+
+### Parakeet ONNX (`parakeet-onnx`)
+
+Three NVIDIA Parakeet TDT variants, all loaded through the pure-ONNX
+`onnx-asr` library (no PyTorch, no NeMo):
+
+| Variant | HuggingFace repo | Language | Notes |
+|---|---|---|---|
+| `v2` | `istupakov/parakeet-tdt-0.6b-v2-onnx` | English only | Smallest, fastest. For pure-English deployments. |
+| `v3` (default) | `istupakov/parakeet-tdt-0.6b-v3-onnx` | 25 EU languages | Same language coverage as `parakeet-tdt`. |
+| `v3sq` | `Olicorne/parakeet-tdt-0.6b-v3-smoothquant-onnx` | 25 EU languages | int8 SmoothQuant rebuild. Best for long audio (>20 s) — calibrated to avoid the long-audio accuracy collapse that the stock int8 encoder hits. |
+
+**Limitations** (honest, by design):
+
+- **CPU / CUDA only.** The handler refuses `--device mps` with a clear error. Apple Silicon users keep using `parakeet-tdt` (the MLX path).
+- **Final-only transcription.** There is no live / progressive transcription — `onnx-asr` does not expose a streaming API and the ONNX export is a single monolithic file (no encoder/decoder/joiner split). The conversation still works: the final transcript is sent to the LLM when the user stops speaking. If you want live sentence-by-sentence updates, use `parakeet-tdt`.
+- **The `--enable-live-transcription` global flag is silently ignored** for this backend.
+
+**Auto-detect & CPU fallback** — the handler must "just work" regardless of what GPU/CUDA situation you have. The parakeet-onnx sub-form has a `device` dropdown right next to `variant` so you can override the default:
+
+- `auto` (default): queries `onnxruntime.get_available_providers()`. If CUDA is advertised, uses it. Otherwise uses CPU. No probe needed.
+- `cuda` (explicit): requests CUDA. If the load or the first warmup call fails (broken CUDA install, missing libcudnn, onnxruntime GPU wheel mismatch, unsupported compute capability), the handler logs a warning and reloads on **CPUExecutionProvider**. The pipeline always starts; you get a working STT just slower on the first utterance.
+- `cpu` (explicit): CPU only.
+
+**Install** (one-time):
+
+```bash
+uv pip install "speech-to-speech[parakeet-onnx]"
+# or, if you use the dashboard's install endpoint:
+# install the "parakeet-onnx" extras group and restart the pipeline.
+```
+
+**Language dropdown** (visible when `--stt parakeet-onnx` is selected):
+
+- For `v2`: the dropdown is greyed out and locked to `en`. v2 is an English-only model.
+- For `v3` / `v3sq`: the dropdown is enabled, with `auto` (default — model auto-detects) plus the 25 EU language codes. Picking a specific code forces the model to that language.
+
+**Reverting** — if you want to go back to the default pipeline:
+
+```bash
+git checkout main
+git branch -D feature/parakeet-onnx
+# then in the dashboard, set --stt back to "parakeet-tdt"
+```
+
+The model files in `~/.cache/huggingface/hub/` can be removed manually:
+
+```bash
+rm -rf ~/.cache/huggingface/hub/models--istupakov--parakeet-tdt-0.6b-v2-onnx
+rm -rf ~/.cache/huggingface/hub/models--istupakov--parakeet-tdt-0.6b-v3-onnx
+rm -rf ~/.cache/huggingface/hub/models--Olicorne--parakeet-tdt-0.6b-v3-smoothquant-onnx
+```
 
 ## LLM (Language Model)
 
@@ -480,7 +533,21 @@ Assistant control); the dashboard's existing pipeline stays the body
 and voice. You can still swap STT/TTS/VAD freely — only the LLM slot
 changes.
 
-## 0.4.3 (this version)
+## 0.5.0 (this version)
+
+- **Parakeet ONNX STT backend** (`--stt parakeet-onnx`). Three NVIDIA
+  Parakeet TDT variants via `onnx-asr` (pure ONNX, no PyTorch needed
+  for STT): `v2` (English-only), `v3` (multilingual 25 EU langs,
+  default), `v3sq` (int8 SmoothQuant rebuild, best for long audio).
+  Exposes `--parakeet-onnx-variant`, `--parakeet-onnx-num-threads`,
+  and `--parakeet-onnx-language` (dropdown: `auto` + 25 EU languages,
+  greyed out and locked to `en` when v2 is selected). CPU / CUDA only —
+  Apple Silicon users keep `parakeet-tdt`. Final-only transcription
+  (no live / progressive updates — `onnx-asr` exposes no streaming
+  API). Install with `uv pip install "speech-to-speech[parakeet-onnx]"`.
+  See the "Parakeet ONNX" section under "STT" above.
+
+## 0.4.3
 
 - **Ollama model lifecycle section** at the bottom of the LLM tab
   (visible only when the LLM URL looks like Ollama). Shows live model

@@ -76,6 +76,9 @@ Requires-Dist: lingua-language-detector>=2.0.2; extra == "language-detection"
 Provides-Extra: mlx-lm
 Requires-Dist: mlx-lm==0.31.1; platform_system == "Darwin" and extra == "mlx-lm"
 Requires-Dist: mlx-vlm==0.4.1; platform_system == "Darwin" and extra == "mlx-lm"
+Provides-Extra: parakeet-onnx
+Requires-Dist: onnx-asr>=0.6; extra == "parakeet-onnx"
+Requires-Dist: onnxruntime>=1.18; extra == "parakeet-onnx"
 Provides-Extra: paraformer
 Requires-Dist: funasr>=1.1.6; extra == "paraformer"
 Requires-Dist: modelscope>=1.17.1; extra == "paraformer"

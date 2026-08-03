@@ -82,6 +82,10 @@ modelscope>=1.17.1
 [paraformer:python_version < "3.11"]
 onnxruntime<1.24
 
+[parakeet-onnx]
+onnx-asr>=0.6
+onnxruntime>=1.18
+
 [pocket]
 pocket-tts>=0.1.0
 

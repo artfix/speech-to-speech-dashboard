@@ -468,6 +468,15 @@ def check_gpu() -> GpuCompatReport:
         if wheel is None:
             report.recommend_cpu = True
             return report
+        # If the cudnn-compat shim is already provisioned on disk, the user
+        # has a working Pascal setup even though the on-disk wheel doesn't
+        # advertise this SM in its arch list. Don't trigger another install +
+        # restart loop in that case — the shim disables cuDNN at interpreter
+        # startup so the pipeline runs on the cuDNN reference path which
+        # works on all SM versions including Pascal.
+        if cudnn_compat_pth_installed():
+            report.supported = True
+            return report
         # Loose equality for cu130 vs 13.0:
         torch_cuda_normalized = (report.torch_cuda or "").replace(".", "")
         wheel_cuda_normalized = (

@@ -42,13 +42,10 @@ from fastapi.staticfiles import StaticFiles
 
 from web_ui import __version__ as _DASHBOARD_VERSION
 from web_ui.gpu import (
-    Wheel,
     check_gpu,
     install_wheel,
     resolution_for_device,
 )
-from web_ui.llm_keepalive import KeepaliveStatus, LLMKeepAliver
-from web_ui.process_manager import LogLine, PipelineProcess
 from web_ui.hermes_manager import HermesProcess
 from web_ui.hermes_proxy import (
     PROXY_MOUNT_PREFIX as _HERMES_PROXY_PREFIX,
@@ -62,6 +59,14 @@ from web_ui.hermes_proxy import (
 from web_ui.hermes_proxy import (
     router as _hermes_proxy_router,
 )
+from web_ui.llm_keepalive import KeepaliveStatus, LLMKeepAliver
+from web_ui.process_manager import LogLine, PipelineProcess
+from web_ui.qwentts_voice_library import (
+    PRESET_SPEAKERS,
+    Qwen3NotInstalled,
+    list_ref_audio_files,
+    synthesize_qwen3_test,
+)
 from web_ui.settings_schema import get_defaults, get_full_schema
 from web_ui.voice_library import (
     ChatterboxNotInstalled,
@@ -69,12 +74,6 @@ from web_ui.voice_library import (
     list_voices,
     save_voice,
     synthesize_test,
-)
-from web_ui.qwentts_voice_library import (
-    PRESET_SPEAKERS,
-    Qwen3NotInstalled,
-    list_ref_audio_files,
-    synthesize_qwen3_test,
 )
 
 logger = logging.getLogger(__name__)
@@ -965,8 +964,9 @@ def api_ollama_reload(body: dict[str, Any]) -> dict[str, Any]:
     warmup_timeout_s = max(5, min(600, warmup_timeout_s))
     if not model:
         return {"ok": False, "message": "model is required", "duration_ms": 0, "context": num_ctx}
-    import httpx
     import time as _time
+
+    import httpx
     started = _time.monotonic()
     origin = base_url.rstrip("/")
     if origin.endswith("/v1"):
@@ -1469,6 +1469,111 @@ def api_install_chatterbox() -> dict[str, Any]:
     return {"ok": True, "started": True, "command": _chatterbox_install_command()}
 
 
+# ---- Auto-install onnx_asr for the parakeet-onnx STT backend ----------------
+#
+# Mirrors the chatterbox installer pattern. The parakeet-onnx backend pulls
+# ``onnx_asr`` at runtime (inside the pipeline subprocess), so unlike the
+# chatterbox TTS handler it's safe to install on demand without restarting the
+# dashboard — the dashboard never imports onnx_asr itself.
+#
+# ``onnx-asr`` is pure-Python and depends on ``onnxruntime`` (which has a
+# pre-built wheel for cu126 + cpu). We install with ``uv pip install`` (NOT
+# ``uv sync``) so the user's locked torch + nvidia-cudnn-cu12 stack is never
+# touched. Once-only: subsequent Starts see ``onnx_asr`` importable and skip.
+def _onnx_asr_installed() -> bool:
+    """Best-effort probe for the optional ``onnx_asr`` package.
+
+    onnx_asr's top-level import is enough — it lazily loads its model classes.
+    If the user installed a different STT backend in the meantime, we still
+    return False here (caller checks the --stt flag).
+    """
+    try:
+        import onnx_asr  # type: ignore[import-not-found]  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _onnx_asr_install_command() -> str:
+    """Return the shell command used to install onnx-asr.
+
+    Intentionally minimal — no version pins, no extras. The package's own
+    metadata picks the right onnxruntime wheel for the user's platform.
+    """
+    return "uv pip install onnx-asr"
+
+
+def _parakeet_onnx_install_needed(settings: dict[str, Any]) -> bool:
+    """True when the user selected --stt parakeet-onnx but onnx_asr isn't importable."""
+    if settings.get("--stt") != "parakeet-onnx":
+        return False
+    return not _onnx_asr_installed()
+
+
+# Same lock + running flag as chatterbox — keeps a manual /api/install/* call
+# and the auto-install from racing each other (the chatterbox install runs
+# `uv pip install transformers==5.2.0` separately, so simultaneous installs
+# could clobber each other; safer to serialize).
+_PARAKEET_ONNX_INSTALL_DONE: threading.Event = threading.Event()
+
+
+def _ensure_parakeet_onnx_installed_async() -> None:
+    """Kick off the onnx-asr install in a background thread if not already
+    running. Safe to call from any context; idempotent.
+    """
+    with _INSTALL_LOCK:
+        if _INSTALL_RUNNING["value"]:
+            return
+        _INSTALL_RUNNING["value"] = True
+    _PARAKEET_ONNX_INSTALL_DONE.clear()
+
+    def _publish(line: str, level: str = "info") -> None:
+        from web_ui.process_manager import LogLine
+
+        loop = state._loop
+        if loop is None:
+            return
+        try:
+            log = LogLine(text=line, level=level, ts=time.time())
+            asyncio.run_coroutine_threadsafe(
+                state._send_to_all(log.to_dict()), loop
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to publish onnx-asr install log line", exc_info=True)
+
+    def _runner() -> None:
+        try:
+            cmd = _onnx_asr_install_command()
+            _publish(f"[install] $ {cmd}")
+            import subprocess
+
+            proc = subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                _publish("[install] " + line.rstrip())
+            rc = proc.wait()
+            if rc == 0:
+                _publish("[install] Done. onnx-asr is now installed.", level="info")
+            else:
+                _publish(f"[install] onnx-asr install failed (exit {rc}).", level="error")
+        except Exception as e:  # noqa: BLE001
+            _publish(f"[install] onnx-asr install crashed: {e}", level="error")
+        finally:
+            with _INSTALL_LOCK:
+                _INSTALL_RUNNING["value"] = False
+            _PARAKEET_ONNX_INSTALL_DONE.set()
+
+    threading.Thread(target=_runner, daemon=True, name="parakeet-onnx-install-auto").start()
+
+
 # Tracking for the chatterbox install started from `api_process_start`.
 # The auto-install kicks it off in a background thread and `api_process_start`
 # waits on the event before launching the pipeline. The existing
@@ -1899,6 +2004,27 @@ def api_process_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = (body or {}).get("settings")
     if not isinstance(settings, dict):
         raise HTTPException(status_code=400, detail="Body must include 'settings' object")
+    # Auto-install onnx-asr in the background if the user picked
+    # --stt parakeet-onnx but the package isn't importable yet. onnx-asr is
+    # pure-Python (no native build, no torch/cudnn touch) and the dashboard
+    # never imports it itself, so this doesn't require a dashboard restart
+    # the way the torch-wheel swap does.
+    if _parakeet_onnx_install_needed(settings):
+        _ensure_parakeet_onnx_installed_async()
+        if not _PARAKEET_ONNX_INSTALL_DONE.wait(timeout=600):
+            _publish_log(
+                "[install] onnx-asr install timed out — continuing anyway",
+                level="error",
+            )
+        # If the install failed and the package is still missing, demote
+        # back to parakeet-tdt so the pipeline can still start instead of
+        # crashing with ImportError.
+        if not _onnx_asr_installed():
+            _publish_log(
+                "[install] onnx-asr install didn't complete; falling back to parakeet-tdt.",
+                level="error",
+            )
+            settings["--stt"] = "parakeet-tdt"
     # Auto-install chatterbox in the background if the user picked it but
     # the package isn't there yet. We don't return 409 — the user pressed
     # Start, the dashboard handles the rest. The pipeline starts as soon

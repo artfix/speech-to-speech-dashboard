@@ -43,7 +43,6 @@ re-download / re-install on every pipeline restart.
 
 from __future__ import annotations
 
-import glob
 import json
 import logging
 import os
@@ -237,11 +236,11 @@ def _download_pascal_wheel() -> Path | None:
 def _already_installed(wheel: Path) -> bool:
     """True if the installed qwentts_cpp_python matches the bundled wheel."""
     try:
-        from importlib.metadata import version, distribution  # type: ignore
+        from importlib.metadata import distribution, version  # type: ignore
     except Exception:
         return False
     try:
-        dist = distribution("qwentts-cpp-python")
+        distribution("qwentts-cpp-python")
     except Exception:
         return False
     installed_version = version("qwentts-cpp-python")
