@@ -598,6 +598,48 @@ def _looks_like_ollama_url(url: str) -> bool:
     return ":11434" in s or "/ollama" in s
 
 
+def _normalize_ollama_keep_alive(raw: str | int | float | None) -> Optional[str]:
+    """Translate the dashboard's keep_alive string to an Ollama-accepted duration.
+
+    The dashboard stores ``--llm-keepalive`` as a plain string the user
+    picks from a curated list (``"0"``, ``"5m"``, ``"30m"``, ``"1h"``,
+    ``"2h"``, ``"12h"``, ``"Forever (-1)"``). Ollama's native
+    ``/api/generate`` only accepts duration strings with a unit suffix
+    (``"5m"``, ``"-1s"`` for never-unload, ``"0s"`` for unload-after),
+    or the bare integer ``0``. The "Forever" sentinel ``-1`` is a
+    dashboard convention that Ollama rejects with HTTP 400
+    ("time: missing unit in duration \"-1\"") — so we translate it
+    here.
+
+    Rules:
+    - empty / None / ``"0"`` → returns ``None`` (caller skips the call).
+    - already has a unit suffix (m/h/s/d) → returned as-is.
+    - bare integer ``-1`` → ``"-1s"`` (never unload).
+    - bare integer ``>= 1`` → ``"Ns"`` (interpreted as seconds; matches
+      the dashboard's keepalive picker where bare numbers are seconds).
+    - anything else → returned as-is and let Ollama reject it (so the
+      error surfaces for the user to debug).
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s == "" or s == "0":
+        return None
+    # Already has a unit suffix — pass through.
+    if s[-1] in ("m", "h", "s", "d", "w"):
+        return s
+    # Bare integer: try to parse.
+    try:
+        n = int(s)
+    except (TypeError, ValueError):
+        return s  # let Ollama reject it for the user to see
+    if n == -1:
+        return "-1s"  # Ollama's "never unload" sentinel
+    if n > 0:
+        return f"{n}s"  # bare positive int → seconds
+    return s  # weird value, pass through
+
+
 @app.get("/api/ollama/models")
 def api_ollama_list_models(
     base_url: str = Query(...),
@@ -682,7 +724,8 @@ def api_ollama_keepalive(body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Body must be an object")
     base_url = (body.get("base_url") or "").strip()
     model = (body.get("model") or "").strip()
-    keep_alive = (body.get("keep_alive") or "").strip()
+    keep_alive_raw = (body.get("keep_alive") or "").strip()
+    keep_alive = _normalize_ollama_keep_alive(keep_alive_raw)
     api_key = (body.get("api_key") or "ollama").strip() or "ollama"
     # Parse + clamp the timeout so a misconfigured value can't hang the
     # background thread for hours. Anything under 5s is useless for a
@@ -709,7 +752,7 @@ def api_ollama_keepalive(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "skipped": None, "message": "base_url is required"}
     if not model:
         return {"ok": False, "skipped": None, "message": "model is required"}
-    if not keep_alive or keep_alive == "0":
+    if keep_alive is None:
         return {"ok": True, "skipped": "keep_alive is 0/empty", "message": None}
     # We call Ollama's native ``/api/generate`` rather than the
     # OpenAI-compat ``/v1/chat/completions`` because (a) it accepts
@@ -767,6 +810,234 @@ def api_ollama_keepalive(body: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "skipped": None,
             "message": f"{type(e).__name__}: {e}",
+        }
+
+
+# ------------------------------------------------------------------
+# /api/ollama/ps + /api/ollama/reload (0.4.3+ Ollama lifecycle section)
+# ------------------------------------------------------------------
+# Ollama's `/api/ps` returns the list of currently-loaded models with
+# their current context window, VRAM footprint, and unload deadline.
+# The LLM tab's "Ollama model lifecycle" section polls this every 2s
+# to render the live context badge ("Context: 16000"). The reload
+# endpoint is the manual button: it sends `keep_alive=0` to unload the
+# model, then fires the warmup endpoint with `num_ctx=<current value>`
+# so the next load sticks at the user's chosen context.
+#
+# Both endpoints short-circuit with `{"ok": false, "message": ...}`
+# when the URL doesn't look like Ollama — same heuristic the keepalive
+# path uses. The frontend hides the whole section when the URL isn't
+# Ollama; these endpoints are a second line of defense.
+
+@app.get("/api/ollama/ps")
+def api_ollama_ps(
+    base_url: str = Query(...),
+    api_key: Optional[str] = Query(None),
+) -> dict[str, Any]:
+    """Return the list of models currently loaded in Ollama's VRAM.
+
+    Calls ``{base_url}/api/ps`` (Ollama's native, NOT OpenAI-compat,
+    endpoint). Parses each entry's ``context_length`` into a flat
+    ``context`` integer so the frontend can show "Context: 16000"
+    without re-parsing Ollama's nested shape.
+
+    Returns ``{"ok": bool, "models": [...], "error": str|None}``.
+    ``ok`` is false when Ollama is unreachable or the URL doesn't
+    look like Ollama.
+    """
+    if not _looks_like_ollama_url(base_url):
+        return {"ok": False, "models": [], "error": "not an ollama url"}
+    base_url = base_url.strip()
+    if not base_url:
+        return {"ok": False, "models": [], "error": "base_url is required"}
+    key = (api_key or "ollama").strip() or "ollama"
+    origin = base_url.rstrip("/")
+    if origin.endswith("/v1"):
+        origin = origin[: -len("/v1")]
+    url = origin + "/api/ps"
+    import httpx
+    try:
+        # 5s is plenty for localhost / LAN. The endpoint is cheap.
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
+            )
+        if not (200 <= resp.status_code < 300):
+            snippet = (resp.text or "")[:200]
+            return {
+                "ok": False,
+                "models": [],
+                "error": f"HTTP {resp.status_code}: {snippet}",
+            }
+        data = resp.json()
+        # Ollama shape: {"models": [{"name", "size_vram", "context_length",
+        # "expires_at", ...}]}. Older builds may omit context_length; we
+        # treat that as "unknown" rather than dropping the entry.
+        items = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return {"ok": True, "models": [], "error": "unexpected response shape"}
+        models = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            name = it.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            ctx_raw = it.get("context_length")
+            try:
+                ctx_int: Optional[int] = int(ctx_raw) if ctx_raw is not None else None
+            except (TypeError, ValueError):
+                ctx_int = None
+            # expires_at is an ISO timestamp; we surface it as a
+            # human-readable "until" string for the badge.
+            until = it.get("expires_at")
+            models.append({
+                "name": name,
+                "context": ctx_int,
+                "size_vram": it.get("size_vram"),
+                "until": until if isinstance(until, str) else None,
+            })
+        return {"ok": True, "models": models, "error": None}
+    except httpx.HTTPError as e:
+        return {"ok": False, "models": [], "error": f"{type(e).__name__}: {e}"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "models": [], "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/ollama/reload")
+def api_ollama_reload(body: dict[str, Any]) -> dict[str, Any]:
+    """Unload the Ollama model, then warm it back up at the current num_ctx.
+
+    Two-step dance because Ollama ignores ``num_ctx`` on requests for a
+    model already resident in its KV cache at a smaller context. The
+    only way to apply a new context is to fully unload first.
+
+    Body (all optional except ``base_url``):
+    - ``base_url`` (required): Ollama base URL.
+    - ``api_key`` (optional): defaults to ``"ollama"``.
+    - ``model`` (required): Ollama model identifier.
+    - ``num_ctx`` (optional): integer context. Forwarded on the warmup.
+    - ``keep_alive`` (optional): the post-warmup keep-alive duration.
+      Defaults to ``"-1"`` (forever) so the freshly-loaded model sticks.
+      Honored by the same `_looks_like_ollama_url` heuristic as the rest
+      of the Ollama endpoints.
+    - ``unload_timeout_s`` (optional): seconds to wait for the unload
+      step. Defaults to 10 (the unload is essentially instant when the
+      model is loaded; we use a real timeout only as a hang guard).
+    - ``warmup_timeout_s`` (optional): seconds to wait for the warmup
+      step. Defaults to 60. Same clamping as the keepalive endpoint.
+
+    Returns ``{"ok": bool, "message": str|None, "duration_ms": int,
+    "context": int|None}``. ``context`` is the value the model is
+    expected to be loaded at (caller can verify with the next
+    /api/ollama/ps poll).
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+    base_url = (body.get("base_url") or "").strip()
+    if not _looks_like_ollama_url(base_url):
+        return {"ok": False, "message": "not an ollama url", "duration_ms": 0, "context": None}
+    model = (body.get("model") or "").strip()
+    api_key = (body.get("api_key") or "ollama").strip() or "ollama"
+    keep_alive = _normalize_ollama_keep_alive(body.get("keep_alive")) or "-1s"
+    num_ctx_raw = body.get("num_ctx")
+    num_ctx: Optional[int] = None
+    if num_ctx_raw is not None and num_ctx_raw != "":
+        try:
+            n = int(num_ctx_raw)
+            if n > 0:
+                num_ctx = n
+        except (TypeError, ValueError):
+            pass
+    try:
+        unload_timeout_s = int(body.get("unload_timeout_s") or 10)
+    except (TypeError, ValueError):
+        unload_timeout_s = 10
+    unload_timeout_s = max(2, min(60, unload_timeout_s))
+    try:
+        warmup_timeout_s = int(body.get("warmup_timeout_s") or 60)
+    except (TypeError, ValueError):
+        warmup_timeout_s = 60
+    warmup_timeout_s = max(5, min(600, warmup_timeout_s))
+    if not model:
+        return {"ok": False, "message": "model is required", "duration_ms": 0, "context": num_ctx}
+    import httpx
+    import time as _time
+    started = _time.monotonic()
+    origin = base_url.rstrip("/")
+    if origin.endswith("/v1"):
+        origin = origin[: -len("/v1")]
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    # Step 1: unload. ``keep_alive=0`` tells Ollama to drop the model
+    # after serving this request. We send an empty /api/generate so
+    # the unload happens immediately. We don't fail the whole call if
+    # the model wasn't loaded (Ollama returns 404 — that's fine, we
+    # wanted it unloaded anyway).
+    unload_url = origin + "/api/generate"
+    unload_payload = {"model": model, "prompt": "", "stream": False, "keep_alive": 0}
+    try:
+        with httpx.Client(timeout=float(unload_timeout_s)) as client:
+            unload_resp = client.post(unload_url, json=unload_payload, headers=headers)
+        # 200 = unloaded, 404 = wasn't loaded (fine). Anything else = real error.
+        if unload_resp.status_code not in (200, 404):
+            snippet = (unload_resp.text or "")[:200]
+            return {
+                "ok": False,
+                "message": f"unload HTTP {unload_resp.status_code}: {snippet}",
+                "duration_ms": int((_time.monotonic() - started) * 1000),
+                "context": num_ctx,
+            }
+    except httpx.HTTPError as e:
+        return {
+            "ok": False,
+            "message": f"unload failed: {type(e).__name__}: {e}",
+            "duration_ms": int((_time.monotonic() - started) * 1000),
+            "context": num_ctx,
+        }
+    # Step 2: warmup with the user's num_ctx. Reuses the keepalive
+    # endpoint so the success/failure shape is identical to what the
+    # dashboard already handles in _one_shot_keepalive_async.
+    warmup_url = origin + "/api/generate"
+    warmup_payload: dict[str, Any] = {
+        "model": model,
+        "prompt": "",
+        "stream": False,
+        "keep_alive": keep_alive,
+    }
+    if num_ctx is not None:
+        warmup_payload["options"] = {"num_ctx": num_ctx}
+    try:
+        with httpx.Client(timeout=float(warmup_timeout_s)) as client:
+            warmup_resp = client.post(warmup_url, json=warmup_payload, headers=headers)
+        duration_ms = int((_time.monotonic() - started) * 1000)
+        if 200 <= warmup_resp.status_code < 300:
+            ctx_msg = f" at {num_ctx} ctx" if num_ctx is not None else ""
+            return {
+                "ok": True,
+                "message": f"reloaded{ctx_msg}",
+                "duration_ms": duration_ms,
+                "context": num_ctx,
+            }
+        snippet = (warmup_resp.text or "")[:200]
+        return {
+            "ok": False,
+            "message": f"warmup HTTP {warmup_resp.status_code}: {snippet}",
+            "duration_ms": duration_ms,
+            "context": num_ctx,
+        }
+    except httpx.HTTPError as e:
+        return {
+            "ok": False,
+            "message": f"warmup failed: {type(e).__name__}: {e}",
+            "duration_ms": int((_time.monotonic() - started) * 1000),
+            "context": num_ctx,
         }
 
 

@@ -440,50 +440,46 @@ class PipelineProcess:
         env["OPENAI_API_KEY"] = "ollama"
 
     # ------------------------------------------------------------------
-    # OpenAI SDK monkey-patch (Hermes tab timeout knob)
+    # OpenAI SDK monkey-patch (LLM request timeout knob, 0.4.2+)
     # ------------------------------------------------------------------
-    # When the LLM backend is Hermes, the pipeline's hardcoded 20 s
-    # read timeout is what produces the canned "Wow I'm a bit slow
-    # today, could you repeat that?" loop. The user-controlled knob
-    # ``hermes.read_timeout_s`` (default 0 = wait forever) lives in
-    # web_ui_settings.json. We translate that into
-    # ``DASHBOARD_LLM_READ_TIMEOUT_S`` in the subprocess env and
-    # install a tiny ``sitecustomize.py`` in the venv's site-packages
-    # so ``_dash_openai_timeout_patch`` is auto-imported before the
-    # pipeline's ``OpenAI(...)`` constructor runs. We remove both
-    # files on pipeline stop so the venv stays clean. The patch is
-    # a strict no-op for non-Hermes backends -- we never write the
-    # files unless ``--llm-backend-type == 'hermes'``.
+    # The pipeline hardcodes a 20 s read timeout on every OpenAI-
+    # compatible LLM call. When the LLM is slow (Ollama cold load,
+    # large local model, slow vLLM), the call times out and the user
+    # hears the canned "Wow I'm a bit slow today, could you repeat
+    # that?" fallback -- which they perceive as the model being
+    # permanently broken. ``DASHBOARD_LLM_READ_TIMEOUT_S`` overrides
+    # that hardcoded 20 s via a tiny monkey-patch installed in the
+    # venv's site-packages and auto-imported through a guarded
+    # ``sitecustomize.py`` snippet. The patch is a strict no-op
+    # when the env var is unset; setting it to ``0`` means
+    # ``httpx.Timeout(None)`` (wait forever); positive integers are
+    # seconds. We remove the patch files on pipeline stop so the venv
+    # stays clean.
+    #
+    # 0.4.2 change: previously gated on ``--llm-backend-type ==
+    # 'hermes'`` only. Now generalized -- every LLM backend honors
+    # the per-backend ``llm_request_timeout_s`` value the user
+    # picked in the LLM Settings tab. ``hermes`` keeps its 0
+    # default; ``ollama`` and other local backends default to 120 s.
+    # See ``get_llm_request_timeout_s`` in settings_schema.py for
+    # the resolution logic.
 
     _OPENAI_PATCH_FILENAME = "_dash_openai_timeout_patch.py"
     _SITECUSTOMIZE_FILENAME = "sitecustomize.py"
     _SITECUSTOMIZE_PROBE_MARKER = "_dash_openai_timeout_patch"
 
     @staticmethod
-    def _is_hermes_backend(settings: dict[str, Any]) -> bool:
-        """True iff the user picked the Hermes proxy as the LLM backend.
+    def _resolve_llm_request_timeout_s(settings: dict[str, Any]) -> int:
+        """Resolve the LLM read timeout for the currently selected backend.
 
-        The dashboard stores ``--llm-backend-type`` in the settings
-        dict; "hermes" means the pipeline points at our
-        ``/hermes-proxy/v1`` reverse proxy instead of at Ollama
-        directly.
+        Thin wrapper around ``settings_schema.get_llm_request_timeout_s``
+        so this module stays self-contained about where the value
+        comes from. Returns seconds (0 = infinite).
         """
-        return (settings.get("--llm-backend-type") or "").strip().lower() == "hermes"
-
-    @staticmethod
-    def _read_timeout_s(settings: dict[str, Any]) -> int:
-        """Read ``hermes.read_timeout_s`` from settings; default 0 (infinite)."""
-        hermes_cfg = settings.get("hermes") or {}
-        if not isinstance(hermes_cfg, dict):
-            return 0
-        raw = hermes_cfg.get("read_timeout_s", 0)
-        try:
-            v = int(raw)
-        except (TypeError, ValueError):
-            return 0
-        if v < 0:
-            return 0
-        return v
+        # Local import keeps the module-load-time cost of settings_schema
+        # off the import path for tests that don't touch the pipeline.
+        from web_ui.settings_schema import get_llm_request_timeout_s
+        return get_llm_request_timeout_s(settings)
 
     @classmethod
     def _site_packages_dir(cls) -> Optional[Path]:
@@ -512,15 +508,16 @@ class PipelineProcess:
     def _maybe_install_openai_timeout_patch(
         cls, settings: dict[str, Any], env: dict[str, str]
     ) -> None:
-        """Install the openai monkey-patch into the venv (Hermes only)."""
-        if not cls._is_hermes_backend(settings):
-            # Always clean up leftovers from a prior Hermes run before
-            # launching a non-Hermes pipeline -- we never want the
-            # patch active when the user isn't using Hermes.
-            cls._remove_openai_timeout_patch()
-            return
+        """Install the openai monkey-patch + set the per-backend timeout env var.
 
-        timeout_s = cls._read_timeout_s(settings)
+        As of 0.4.2 the patch is no longer gated on ``--llm-backend-type
+        == 'hermes'`` -- every LLM backend honors the per-backend
+        ``llm_request_timeout_s`` value. The patch itself is a strict
+        no-op when ``DASHBOARD_LLM_READ_TIMEOUT_S`` is unset, so it's
+        safe to leave installed between pipeline starts; we still drop
+        the files on pipeline stop for venv cleanliness.
+        """
+        timeout_s = cls._resolve_llm_request_timeout_s(settings)
         env["DASHBOARD_LLM_READ_TIMEOUT_S"] = str(timeout_s)
 
         sp = cls._site_packages_dir()
@@ -557,7 +554,7 @@ class PipelineProcess:
             if cls._SITECUSTOMIZE_PROBE_MARKER not in existing:
                 snippet = (
                     "\n\n# Auto-installed by speech-to-speech-dashboard when the "
-                    "Hermes tab's LLM read timeout knob is active. Safe to delete; "
+                    "LLM request timeout knob is active. Safe to delete; "
                     "it is removed on pipeline stop.\n"
                     "try:\n"
                     "    import _dash_openai_timeout_patch  # noqa: F401\n"
@@ -567,22 +564,25 @@ class PipelineProcess:
                 sitecustomize_path.write_text(existing + snippet, encoding="utf-8")
 
             logger.info(
-                "Installed openai timeout patch for Hermes (timeout_s=%s) at %s",
+                "Installed openai timeout patch (timeout_s=%s for backend=%s) at %s",
                 timeout_s,
+                settings.get("--llm-backend"),
                 sp,
             )
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Failed to install openai timeout patch; pipeline will use the "
-                "20 s default. The Hermes tab knob will not take effect."
+                "20 s default. The LLM request timeout knob will not take effect."
             )
 
     @classmethod
     def _remove_openai_timeout_patch(cls) -> None:
         """Best-effort removal of the patch + its sitecustomize marker.
 
-        Called on pipeline stop and on every non-Hermes start (so a
-        prior Hermes run never leaks into a different LLM backend).
+        Called on pipeline stop so the venv doesn't keep a
+        sitecustomize.py fragment around between runs. The patch is
+        re-installed on the next start, so removing it is purely a
+        cleanliness measure.
         """
         sp = cls._site_packages_dir()
         if sp is None:

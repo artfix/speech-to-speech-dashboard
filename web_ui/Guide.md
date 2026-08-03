@@ -289,6 +289,45 @@ Settings. Pick a value, click **Save Settings**, then **▶ Start
 Pipeline** (or **↻ Restart Pipeline** if it's already running) — the
 pinger comes up alongside the pipeline.
 
+## LLM request timeout: cut-off replies on the first model load
+
+The pipeline's OpenAI-compatible LLM handler hardcodes a **20 second
+read timeout** for every chat / response call. If your LLM takes
+longer than that to start streaming — typical for a cold Ollama load,
+a local 70 B model on a CPU box, a slow vLLM with a busy GPU, or
+the first call right after `Stop Pipeline` + `Start Pipeline` — the
+request is aborted and the robot replies with the canned
+*"Wow I'm a bit slow today, could you repeat that?"* fallback
+forever, because every subsequent attempt hits the same tight timeout.
+
+The dashboard exposes a per-backend **LLM request timeout (s)**
+dropdown on the **LLM** tab, right under `--ollama-load-timeout-seconds`.
+Picks:
+
+| Option | Behavior |
+|---|---|
+| `0 s — no timeout (wait forever)` | Recommended for local models and Hermes. The pipeline never aborts on silence; a truly hung LLM will stall the pipeline until it dies. |
+| `30 s` / `60 s` | For fast hosted backends (OpenAI, HF Inference) where 20 s is usually enough but you'd like a small buffer. |
+| `120 s` (default for local backends) | Covers most cold loads on a local Ollama / vLLM / llama.cpp server. |
+| `300 s` / `600 s` | For very large models on slow links (70 B+ over LAN, etc.). |
+| `Custom (type your own)` | Any integer 0-3600 s. Pick this for the long tail. |
+
+The value is stored **per backend** — switching from `Hermes Agent`
+(`0 = no timeout`) to `Ollama` (`120 s`) keeps each backend's tuned
+value. The default for `responses-api` stays at `20 s` (hosted OpenAI
+first-byte is fast; the pipeline's hardcoded value is correct there).
+Defaults for `ollama`, `vllm`, `llama.cpp`, `mlx-lm`, and `transformers`
+are `120 s` because those are the backends that get bitten by this.
+
+Implementation: a small monkey-patch
+(`web_ui/_openai_timeout_patch.py`) is auto-imported via
+`sitecustomize.py` in the venv before the pipeline's `OpenAI(...)`
+constructor runs. The patch only replaces the openai SDK's read
+timeout when it sees the pipeline's hardcoded 20 s shape, so it
+never clobbers a deliberate timeout the user or another tool has
+set. No changes to `src/speech_to_speech/` (CLAUDE.md hard
+constraint).
+
 ## Pipeline won't start, exits immediately
 
 Open the **Status & Logs** tab and look at the error. Common causes:
@@ -306,6 +345,54 @@ The pipeline keeps the TTS model loaded in RAM while running. Chatterbox Turbo i
 To free RAM **without stopping the pipeline** (so the VAD, STT, and LLM stay warm), open the **Control** tab and click **🧹 Unload TTS Model**. The TTS handler drops the model in place and runs `gc.collect()`. The next TTS request reloads the model — ~15-20s on CPU, ~5s on CUDA. The robot will pause for that long on the very first reply after unloading, then behave normally.
 
 If you want to free **everything**, click **■ Stop Pipeline**. The subprocess exits and the OS reclaims all of it. Click **▶ Start Pipeline** to start over (model load is again ~15-20s on CPU).
+
+## Ollama model lifecycle: num_ctx doesn't always stick
+
+The `--responses-api-num-ctx` setting tells Ollama what context window
+to use when it loads the model. The dashboard saves the value, the
+pipeline forwards it on every chat-completions call, and the
+dashboard's own warmup sends it at pipeline startup. **All the
+plumbing is correct.**
+
+**The catch:** Ollama ignores `num_ctx` on requests for a model that
+is **already loaded** in its KV cache at a smaller context. Once a
+model is resident at, say, 4096 ctx, every subsequent request with
+`num_ctx=16000` is silently dropped — `ollama ps` keeps showing 4096
+until the model is fully unloaded. The only way to apply a new
+`num_ctx` is to unload first, then let the next request load it
+fresh at the new size.
+
+The dashboard has two coordinated ways to handle this:
+
+1. **Auto-unload on `num_ctx` change.** When you edit
+   `--responses-api-num-ctx` and the value differs from what Ollama
+   currently has loaded, the dashboard silently sends `keep_alive=0`
+   to unload the model. The next request loads it fresh at the new
+   context. The lifecycle badge updates to show the new size. Silent
+   — no toast, no confirmation.
+2. **Manual "🔄 Unload & reload Ollama model" button.** In the new
+   **Ollama model lifecycle** section at the bottom of the LLM tab
+   (visible only when your LLM URL looks like Ollama). Click this
+   whenever you want to force a reload at the current `num_ctx`,
+   regardless of whether anything changed. Useful for:
+   - First run after upgrading to 0.4.3 (the model may already be
+     loaded at the wrong context from before).
+   - After running `ollama run <model>` in your terminal (which
+     loads the model at Ollama's default 4096 context).
+   - Test-driving different context sizes without a full pipeline
+     restart.
+
+The section also shows live status (model name, endpoint, current
+context from `ollama ps`) polled every 2 seconds — same cadence as
+the Hermes tab. If Ollama is unreachable, the badge turns red and
+the button is disabled.
+
+What the section **does not** do: it doesn't change `--llm-keepalive`
+behavior, doesn't restart the pipeline, doesn't touch the running
+session's chat history. It only reloads the model at the user's
+chosen context window so the **next** request — including the
+pipeline's chat-completions stream — lands on the freshly-loaded
+model.
 
 ## Where are my settings saved?
 
@@ -393,7 +480,32 @@ Assistant control); the dashboard's existing pipeline stays the body
 and voice. You can still swap STT/TTS/VAD freely — only the LLM slot
 changes.
 
-## 0.4.0 (this version)
+## 0.4.3 (this version)
+
+- **Ollama model lifecycle section** at the bottom of the LLM tab
+  (visible only when the LLM URL looks like Ollama). Shows live model
+  name + endpoint + current context from `ollama ps` (polled every
+  2s), plus a **🔄 Unload & reload Ollama model** button that
+  forces the model to reload at the user's chosen `--responses-api-num-ctx`.
+  Fixes the "num_ctx doesn't stick" bug where Ollama ignores
+  `num_ctx` on requests for a model already resident in its KV cache.
+  Also auto-unloads silently when `--responses-api-num-ctx` changes
+  if Ollama is currently holding the model at a different context.
+  See the "Ollama model lifecycle" section below.
+
+## 0.4.2
+
+- **Per-backend LLM request timeout (s)** dropdown on the LLM tab
+  (under `--ollama-load-timeout-seconds`). Overrides the pipeline's
+  hardcoded 20 s openai-SDK read timeout so the first reply after a
+  cold model load isn't cut off ("Wow I'm a bit slow today...").
+  Presets: 0 (no timeout), 30, 60, 120, 300, 600 + Custom. Stored per
+  backend so switching from Hermes (0) to Ollama (120 s) keeps each
+  backend's tuned value. Default for `responses-api` stays at 20 s
+  (hosted OpenAI fast first-byte). See the "LLM request timeout"
+  section below for details.
+
+## 0.4.0
 
 - **Hermes tab** in the sidebar: start, polite-stop, cancel, kill, plus
   a text console and a filler-phrase config (10-line box).

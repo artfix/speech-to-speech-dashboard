@@ -508,6 +508,21 @@ function renderSettingsTab(tab, groupId) {
             // model can bump it. Same hand-rendered pattern as
             // --llm-keepalive (it's not in the introspected schema).
             grid2.appendChild(renderOllamaLoadTimeoutField());
+            // 0.4.2+: per-backend LLM request read-timeout dropdown
+            // (overrides the pipeline's hardcoded 20 s openai-SDK
+            // read timeout). Dashboard-only — upstream pipeline has
+            // no such flag. Sits below the keepalive / ollama-load
+            // timeout rows so the LLM tab reads top-to-bottom:
+            // backend type → keepalive → ollama warmup → request
+            // timeout.
+            grid2.appendChild(renderLlmRequestTimeoutField());
+            // 0.4.3+: Ollama model lifecycle section. Hidden when the
+            // URL doesn't look like Ollama (matches the keepalive
+            // heuristic). Shows live model/endpoint/context + manual
+            // reload button. Auto-unloads when --responses-api-num-ctx
+            // changes if the model is currently loaded at a different
+            // context.
+            grid2.appendChild(renderOllamaLifecycleField());
         }
     }
     // The voice library lives inside the TTS tab. It only renders when the
@@ -1093,6 +1108,65 @@ function applyDisabledStates() {
         }
     }
     updateQwen3RequiredHints();
+    // 0.4.3+: auto-unload hook for Ollama num_ctx changes. Fires every
+    // time any setting mutates, but only acts when (a) the URL looks
+    // like Ollama, (b) the current Ollama-resident model's context
+    // differs from the user's setting, (c) the value actually changed
+    // since last time we checked (debounced by comparing against the
+    // last value we processed).
+    _maybeAutoUnloadOnNumCtxChange();
+}
+
+// 0.4.3+: auto-unload hook state. Tracks the last num_ctx we processed
+// so we don't spam Ollama with unloads on every keystroke while the
+// user is typing in the field.
+let _lastProcessedNumCtx = null;
+async function _maybeAutoUnloadOnNumCtxChange() {
+    // Bail if the URL isn't Ollama. The lifecycle section itself is
+    // hidden in that case, but we still gate here as a safety net.
+    if (!_llmBaseUrlLooksLikeOllama()) return;
+    const numCtx = _ollamaLifecycleCurrentNumCtx();
+    // Skip when the value hasn't changed since the last processed
+    // tick. This debounces the per-keystroke fire.
+    if (numCtx === _lastProcessedNumCtx) return;
+    _lastProcessedNumCtx = numCtx;
+    // Skip when there's no model name to act on.
+    const model = state.settings['--model-name'];
+    if (!model) return;
+    // Check whether Ollama is currently holding the model at a
+    // *different* context. If it's already at our setting, or not
+    // loaded at all, do nothing.
+    const ps = await _ollamaLifecycleFetchPs();
+    if (!ps || !ps.ok) return;
+    const match = (ps.models || []).find((m) => m.name === model);
+    if (!match) return;  // not loaded — nothing to unload
+    const currentCtx = match.context;
+    // If Ollama already reports the context the user wants, do nothing.
+    if (currentCtx === numCtx) return;
+    // Context differs → trigger an unload + reload at the new size.
+    // Silent (no toast) — the user will see the result via the live
+    // status badge refresh.
+    const res = await _ollamaLifecycleReload(numCtx);
+    if (res && res.ok) {
+        // Update the lifecycle section's badge immediately so the
+        // user sees the new context without waiting for the next
+        // 2s tick.
+        const lbl = document.getElementById('ollama-lifecycle-model');
+        if (lbl) {
+            const ctxMsg = res.context != null ? `ctx ${res.context}` : 'ctx (unknown)';
+            lbl.textContent = `Model: ${model} · ${ctxMsg} (auto-reloaded)`;
+        }
+        const lastAction = document.getElementById('ollama-lifecycle-last-action');
+        if (lastAction) {
+            lastAction.textContent = `Last action: ok — auto-reloaded at ${res.context} ctx (${res.duration_ms}ms)`;
+            lastAction.style.color = '';
+        }
+    } else {
+        // Don't surface errors loudly — the manual button is the
+        // user-facing way to retry. Just log via the existing logs
+        // mechanism if anything.
+        console.warn('[ollama-lifecycle] auto-reload failed:', res);
+    }
 }
 
 // Mark the qwen3 ref_audio / ref_text / instruct fields with a small
@@ -1316,6 +1390,375 @@ function renderOllamaLoadTimeoutField() {
     if (state.settings[flag] == null) state.settings[flag] = 60;
     const help = el('div', { class: 'field-help', id: `help-${flag}` }, helpText);
     return el('div', { class: 'field full' }, [label, sel, help]);
+}
+
+
+// 0.4.2+: LLM request read-timeout dropdown. Picks how long the openai
+// SDK (and therefore the pipeline) waits for the LLM to start streaming
+// a response before giving up. The pipeline hardcodes a 20 s read
+// timeout for every OpenAI-compatible call; if the first reply after
+// a model load gets cut off ("Wow I'm a bit slow today, could you
+// repeat that?"), this knob lets the user bump it. Per-backend: each
+// entry in ``llm_request_timeout_s[<backend>]`` is independent, so
+// switching from Hermes (0 = wait forever) to Ollama (120 s by
+// default) keeps each backend's tuned value.
+//
+// Like ``--llm-keepalive`` and ``--ollama-load-timeout-seconds``,
+// this is dashboard-only -- the upstream pipeline has no such flag
+// (CLAUDE.md forbids editing src/), so we hand-roll it instead of
+// going through the introspected renderField path.
+const _LLM_REQUEST_TIMEOUT_PRESETS = [
+    { value: 0,   label: '0 s — no timeout (wait forever)' },
+    { value: 30,  label: '30 s' },
+    { value: 60,  label: '60 s' },
+    { value: 120, label: '120 s (default for local backends)' },
+    { value: 300, label: '300 s (5 min)' },
+    { value: 600, label: '600 s (10 min)' },
+];
+function _activeLlmBackendKey() {
+    // Same key resolution as ``get_llm_request_timeout_s`` on the
+    // Python side: hermes-proxy wins (key = "hermes"), otherwise the
+    // raw ``--llm-backend`` value. Empty string when nothing has been
+    // picked yet — the dropdown still renders, it just shows the
+    // curated default for an empty key.
+    const backendType = (state.settings['--llm-backend-type'] || '').toLowerCase();
+    if (backendType === 'hermes') return 'hermes';
+    return (state.settings['--llm-backend'] || '').toLowerCase() || 'chat-completions';
+}
+function _resolveLlmRequestTimeoutValue() {
+    // Server-side resolution lives in ``settings_schema.py``. Mirror
+    // it here so the dropdown shows the right initial value without
+    // a round-trip. We re-read ``state.settings.llm_request_timeout_s``
+    // on every call so backend switches re-render with the right
+    // value.
+    const key = _activeLlmBackendKey();
+    const map = state.settings.llm_request_timeout_s;
+    if (map && typeof map === 'object') {
+        const raw = map[key];
+        const n = parseInt(raw, 10);
+        if (Number.isFinite(n) && n >= 0) return n;
+    }
+    // Mirror of ``_LLM_REQUEST_TIMEOUT_DEFAULTS_S`` in settings_schema.py.
+    // If you change one, change the other.
+    const defaults = {
+        hermes: 0, ollama: 120, vllm: 120, 'llama.cpp': 120,
+        'chat-completions': 120, 'responses-api': 20,
+        'mlx-lm': 120, transformers: 120,
+    };
+    return defaults[key] != null ? defaults[key] : 120;
+}
+function renderLlmRequestTimeoutField() {
+    const flag = 'llm_request_timeout_s';
+    const fieldId = `f-llm-request-timeout-s`;
+    const backendKey = _activeLlmBackendKey();
+    const curVal = _resolveLlmRequestTimeoutValue();
+    const isCurated = _LLM_REQUEST_TIMEOUT_PRESETS.some((c) => c.value === curVal);
+    const customSentinel = '__custom__';
+
+    const hoverPreview =
+        'Per-backend LLM read timeout (seconds). The pipeline hardcodes a ' +
+        '20 s default; bump it if the first reply after a model load gets ' +
+        'cut off ("Wow I\'m a bit slow today..."). 0 = wait forever.';
+    const helpText =
+        'How long the openai SDK waits for the LLM to start streaming a ' +
+        'response before giving up. The pipeline hardcodes a 20 s read ' +
+        'timeout for every OpenAI-compatible call; if the first reply after ' +
+        'a model load gets cut off — you hear the canned "Wow I\'m a bit ' +
+        'slow today, could you repeat that?" — this knob fixes it. ' +
+        '0 = wait forever (recommended for local models and Hermes). ' +
+        '>0 = seconds. Stored per backend so switching backends keeps ' +
+        'each one tuned. Current backend: ' + backendKey + '. ' +
+        'Defaults: hermes = 0; ollama / vllm / llama.cpp / mlx-lm / ' +
+        'transformers = 120 s; responses-api = 20 s (hosted OpenAI / HF).';
+
+    const label = el('label', { class: 'field-label', for: fieldId }, [
+        'LLM request timeout (s)',
+        el('span', { class: 'field-flag' }, ''),
+        el('button', {
+            type: 'button', class: 'help-btn', title: hoverPreview,
+            onclick: (e) => {
+                e.preventDefault();
+                const field = e.currentTarget.closest('.field');
+                const help = field && field.querySelector('.field-help');
+                if (help) help.classList.toggle('visible');
+            },
+        }, '?'),
+    ]);
+
+    const sel = el('select', {
+        class: 'field-select', id: fieldId,
+        onchange: (e) => {
+            const v = e.target.value;
+            if (v === customSentinel) {
+                const freeText = el('input', {
+                    class: 'field-input', id: fieldId, type: 'number',
+                    min: '0', max: '3600', step: '5',
+                    placeholder: 'e.g. 90',
+                    oninput: (ev) => {
+                        const n = parseInt(ev.target.value, 10);
+                        if (!state.settings[flag] || typeof state.settings[flag] !== 'object') {
+                            state.settings[flag] = {};
+                        }
+                        state.settings[flag][backendKey] =
+                            Number.isFinite(n) && n >= 0 ? n : 0;
+                        applyDisabledStates();
+                    },
+                });
+                freeText.value = String(curVal);
+                if (!state.settings[flag] || typeof state.settings[flag] !== 'object') {
+                    state.settings[flag] = {};
+                }
+                state.settings[flag][backendKey] = curVal;
+                sel.replaceWith(freeText);
+                freeText.focus();
+                freeText.select();
+                return;
+            }
+            const n = parseInt(v, 10);
+            if (!state.settings[flag] || typeof state.settings[flag] !== 'object') {
+                state.settings[flag] = {};
+            }
+            state.settings[flag][backendKey] =
+                Number.isFinite(n) && n >= 0 ? n : 0;
+            applyDisabledStates();
+        },
+    });
+    for (const c of _LLM_REQUEST_TIMEOUT_PRESETS) {
+        sel.appendChild(el('option', { value: String(c.value) }, c.label));
+    }
+    sel.appendChild(el('option', { value: customSentinel }, 'Custom (type your own)'));
+    if (isCurated) {
+        sel.value = String(curVal);
+    } else {
+        // Saved value isn't curated — switch to Custom so the value
+        // is visible rather than silently snapping to the default.
+        sel.value = customSentinel;
+    }
+    // Make sure state.settings[flag] is an object even if it was
+    // missing on first load (e.g. settings.json from a 0.4.1
+    // install). Mirrors how ``state.settings.hermes`` is treated in
+    // the Hermes tab.
+    if (!state.settings[flag] || typeof state.settings[flag] !== 'object') {
+        state.settings[flag] = {};
+    }
+    if (state.settings[flag][backendKey] == null) {
+        state.settings[flag][backendKey] = curVal;
+    }
+
+    // Per-backend badge: tells the user which key this dropdown is
+    // editing right now. Updating when the backend changes is the
+    // parent's job (it calls renderAll() after a backend change,
+    // which rebuilds the field). The badge makes it obvious that
+    // switching from "Ollama" to "Hermes Agent" will land you on a
+    // different stored value.
+    const backendBadge = el('span', {
+        class: 'text-dim',
+        style: { marginLeft: '8px', fontSize: '12px' },
+    }, ' · for backend: ' + backendKey);
+
+    const help = el('div', { class: 'field-help', id: `help-${flag}` }, helpText);
+    // ``.field.full`` matches the keepalive/ollama-load-timeout
+    // rows above so the dropdown sits full-width and lines up with
+    // them. Wrapping the badge in the label row keeps the layout
+    // consistent with the other dashboard-only fields.
+    const wrap = el('div', { class: 'field full' }, [label, sel, help]);
+    label.appendChild(backendBadge);
+    return wrap;
+}
+
+
+// 0.4.3+: Ollama model lifecycle section. Renders only when the LLM
+// URL looks like Ollama (`:11434` or `/ollama` substring — matches
+// the `_looks_like_ollama_url` heuristic on the server side).
+//
+// Surfaces:
+//   - the model name + endpoint + live context window (polled every
+//     2s from /api/ollama/ps, same cadence as the Hermes tab)
+//   - a "🔄 Unload & reload Ollama model with current ctx" button
+//     that calls /api/ollama/reload (unload + warmup at the saved
+//     --responses-api-num-ctx)
+//   - the result of the last reload (ok / skipped / failed)
+//
+// Auto-unload behavior on num_ctx change is wired in step 9 below
+// (see `_maybeAutoUnloadOnNumCtxChange`).
+function _llmBaseUrlLooksLikeOllama() {
+    const url = (state.settings['--responses-api-base-url'] || '').toLowerCase();
+    return url.includes(':11434') || url.includes('/ollama');
+}
+async function _ollamaLifecycleFetchPs() {
+    const baseUrl = state.settings['--responses-api-base-url'] || '';
+    const apiKey = state.settings['--responses-api-api-key'] || 'ollama';
+    if (!baseUrl) return { ok: false, models: [], error: 'no base_url' };
+    try {
+        const params = new URLSearchParams({ base_url: baseUrl });
+        if (apiKey) params.set('api_key', apiKey);
+        return await getJSON('/api/ollama/ps?' + params.toString());
+    } catch (e) {
+        return { ok: false, models: [], error: String(e) };
+    }
+}
+async function _ollamaLifecycleReload(numCtx) {
+    const baseUrl = state.settings['--responses-api-base-url'] || '';
+    const apiKey = state.settings['--responses-api-api-key'] || 'ollama';
+    const model = state.settings['--model-name'] || '';
+    const keepAlive = state.settings['--llm-keepalive'] || '-1';
+    const warmupTimeout = parseInt(state.settings['--ollama-load-timeout-seconds'], 10) || 60;
+    if (!model) return { ok: false, message: 'no --model-name', duration_ms: 0, context: null };
+    try {
+        return await postJSON('/api/ollama/reload', {
+            base_url: baseUrl,
+            api_key: apiKey,
+            model: model,
+            num_ctx: numCtx,
+            keep_alive: keepAlive,
+            warmup_timeout_s: warmupTimeout,
+        });
+    } catch (e) {
+        return { ok: false, message: String(e), duration_ms: 0, context: null };
+    }
+}
+function _ollamaLifecycleCurrentNumCtx() {
+    // Same resolver logic as the openai timeout patch reads on the
+    // server side: prefer the user's saved value, fall back to no
+    // num_ctx (Ollama's model default).
+    const raw = state.settings['--responses-api-num-ctx'];
+    const n = parseInt(raw, 10);
+    return (Number.isFinite(n) && n > 0) ? n : null;
+}
+function renderOllamaLifecycleField() {
+    const wrap = el('div', { class: 'field full', id: 'ollama-lifecycle-section' });
+    // Hidden when URL isn't Ollama. The heuristic mirrors the server
+    // side so the section is invisible to OpenAI / HF / vLLM users.
+    if (!_llmBaseUrlLooksLikeOllama()) {
+        wrap.style.display = 'none';
+        return wrap;
+    }
+    wrap.appendChild(el('h3', { style: { marginTop: '24px', borderTop: '1px solid var(--border, rgba(255,255,255,0.1))', paddingTop: '16px' } },
+        'Ollama model lifecycle'));
+    const info = el('div', { class: 'text-dim', style: { marginBottom: '8px', maxWidth: '720px' } },
+        'Live status of the model currently loaded in Ollama. ' +
+        'Use after changing --responses-api-num-ctx — Ollama ignores ' +
+        'num_ctx on requests for a model that is already resident, so ' +
+        'you must unload + reload to apply a new context window.');
+    wrap.appendChild(info);
+    // Status badge: model / endpoint / context. The context line is
+    // what the user cares about most — it's the proof that num_ctx
+    // actually took effect.
+    const modelLabel = el('div', { id: 'ollama-lifecycle-model',
+        style: { fontFamily: 'monospace', padding: '6px 10px',
+                 background: 'var(--bg-elev, rgba(255,255,255,0.04))',
+                 border: '1px solid var(--border, rgba(255,255,255,0.1))',
+                 borderRadius: '4px', minHeight: '20px' } },
+        '(loading…)');
+    const endpointLabel = el('div', { class: 'text-dim',
+        style: { marginTop: '4px', fontSize: '12px' } });
+    endpointLabel.textContent = 'Endpoint: ' +
+        (state.settings['--responses-api-base-url'] || '');
+    wrap.appendChild(modelLabel);
+    wrap.appendChild(endpointLabel);
+    // Reload button. Disabled until the first /api/ollama/ps lands
+    // (so we know Ollama is reachable); spinner while in flight.
+    const btn = el('button', { class: 'btn btn-primary', id: 'ollama-lifecycle-reload',
+        style: { marginTop: '12px' }, disabled: true },
+        '🔄 Unload & reload Ollama model with current ctx');
+    const lastAction = el('div', { class: 'text-dim',
+        id: 'ollama-lifecycle-last-action',
+        style: { marginTop: '8px', fontSize: '12px', minHeight: '18px' } },
+        '');
+    btn.onclick = async () => {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        const originalText = btn.textContent;
+        btn.textContent = '⏳ Reloading…';
+        lastAction.textContent = '';
+        const numCtx = _ollamaLifecycleCurrentNumCtx();
+        const res = await _ollamaLifecycleReload(numCtx);
+        btn.textContent = originalText;
+        btn.disabled = false;
+        const dur = (res && res.duration_ms) ? `${res.duration_ms}ms` : '';
+        if (res && res.ok) {
+            const ctxMsg = res.context ? ` at ${res.context} ctx` : '';
+            lastAction.textContent = `Last action: ok — reloaded${ctxMsg}${dur ? ' (' + dur + ')' : ''}`;
+            lastAction.style.color = '';
+        } else {
+            const msg = (res && res.message) ? res.message : 'unknown error';
+            lastAction.textContent = `Last action: failed — ${msg}`;
+            lastAction.style.color = 'var(--danger, #d33)';
+        }
+        // Refresh the badge immediately so the user sees the new context
+        // without waiting for the next 2s tick.
+        await _ollamaLifecycleTick();
+    };
+    wrap.appendChild(btn);
+    wrap.appendChild(lastAction);
+    // Poll /api/ollama/ps every 2s while the LLM tab is visible. Same
+    // cadence as the Hermes tab — matches the dashboard's "feels
+    // live" target without hammering Ollama.
+    let pollTimer = null;
+    async function _ollamaLifecycleTick() {
+        const r = await _ollamaLifecycleFetchPs();
+        if (!r || !r.ok) {
+            const reason = (r && r.error) ? r.error : 'unreachable';
+            modelLabel.textContent = `Ollama: ${reason}`;
+            modelLabel.style.color = 'var(--danger, #d33)';
+            btn.disabled = true;
+            return;
+        }
+        modelLabel.style.color = '';
+        btn.disabled = false;
+        const models = r.models || [];
+        if (models.length === 0) {
+            modelLabel.textContent = '(no models loaded — Ollama is idle)';
+            return;
+        }
+        // Match the live model by name; if none matches, show the
+        // first one with a warning so the user knows which model is
+        // actually resident (might be a different one than their
+        // --model-name setting).
+        const wantedName = state.settings['--model-name'] || '';
+        const match = models.find((m) => m.name === wantedName) || models[0];
+        const ctxStr = (match.context != null) ? `ctx ${match.context}` : 'ctx (unknown)';
+        const sizeStr = (match.size_vram != null) ? ` · ${(match.size_vram / 1e9).toFixed(1)} GB VRAM` : '';
+        const untilStr = match.until ? ` · until ${match.until}` : '';
+        const matchedHere = match.name === wantedName;
+        modelLabel.textContent =
+            (matchedHere ? `Model: ${match.name}` : `Model: ${match.name} (warning: --model-name is ${wantedName})`) +
+            ` · ${ctxStr}${sizeStr}${untilStr}`;
+    }
+    // Helper exposed on window for the global visibility-check loop.
+    // Mirrors the pattern in the Hermes tab poll.
+    function _start() {
+        if (pollTimer) return;
+        _ollamaLifecycleTick();
+        pollTimer = setInterval(_ollamaLifecycleTick, 2000);
+    }
+    function _stop() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+    // Start polling immediately if the LLM tab is currently active.
+    const llmTab = document.getElementById('tab-llm');
+    if (llmTab && llmTab.classList.contains('active')) _start();
+    // Wire to the visibility-check loop that already runs every few
+    // seconds. We piggy-back on the existing poll by checking the
+    // LLM tab's visibility inside our own interval above.
+    // Stash the timers so renderAll() can stop them.
+    wrap._ollamaLifecycleStart = _start;
+    wrap._ollamaLifecycleStop = _stop;
+    // Also stop on renderAll: each render rebuilds the field, and we
+    // don't want the old interval leaking. The new render's interval
+    // takes over.
+    setTimeout(() => {
+        // Defer one tick so renderAll's caller has a chance to wire
+        // the new lifecycle section in.
+        const old = document.getElementById('ollama-lifecycle-section');
+        if (old && old !== wrap) {
+            if (old._ollamaLifecycleStop) old._ollamaLifecycleStop();
+        }
+        // Restart polling on the new section if the LLM tab is active.
+        const llmTab2 = document.getElementById('tab-llm');
+        if (llmTab2 && llmTab2.classList.contains('active')) _start();
+    }, 0);
+    return wrap;
 }
 
 

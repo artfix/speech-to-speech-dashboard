@@ -582,6 +582,45 @@ def get_defaults() -> dict[str, Any]:
             # "Wow I'm a bit slow today..." fallback loop.
             "read_timeout_s": 0,
         },
+        # 0.4.2+: Per-backend LLM request timeout (seconds), drives the
+        # ``DASHBOARD_LLM_READ_TIMEOUT_S`` env var consumed by
+        # ``_openai_timeout_patch`` so the openai SDK's read timeout
+        # matches what the user picked, instead of the pipeline's
+        # hardcoded 20 s. Stored per backend so switching from Hermes
+        # (0 = infinite) to Ollama (120 s) keeps each backend's tuned
+        # value. ``get_llm_request_timeout_s()`` returns the resolved
+        # value for the currently selected backend, falling back to a
+        # per-backend default if the key is missing.
+        #
+        # Defaults rationale:
+        #   * hermes / chat-completions via hermes-proxy -> 0 (no
+        #     timeout) because the tab already chose this and it works.
+        #   * ollama (chat-completions via local ollama) -> 120 s
+        #     because cold loads on local boxes routinely exceed 20 s
+        #     on first byte. ``llm_request_timeout_s["ollama"]`` is
+        #     also the default for any chat-completions path that
+        #     points at a non-hermes local OpenAI-compat server.
+        #   * responses-api (hosted OpenAI / HF Inference) -> 20 s:
+        #     fast first byte is the assumed norm, and the pipeline's
+        #     hardcoded 20 s matches that. Users can bump it via the
+        #     dropdown if they're seeing timeout fallbacks.
+        #   * mlx-lm / transformers (in-process local model) -> 120 s
+        #     because the first call after process start pays model
+        #     load time.
+        #   * "chat-completions" is shared by ollama + vllm +
+        #     llama.cpp + hermes-proxy; the fallback below picks 120 s
+        #     by default, then the per-backend key overrides when the
+        #     user picks a specific backend.
+        "llm_request_timeout_s": {
+            "hermes": 0,
+            "ollama": 120,
+            "vllm": 120,
+            "llama.cpp": 120,
+            "chat-completions": 120,
+            "responses-api": 20,
+            "mlx-lm": 120,
+            "transformers": 120,
+        },
     }
     for group in get_full_schema()["groups"]:
         for f in group["fields"]:
@@ -806,3 +845,96 @@ def settings_from_argv(flags: list[str]) -> dict[str, str]:
             out[tok] = "true"
             i += 1
     return out
+
+
+# ----------------------------------------------------------------------
+# Per-backend LLM request timeout (0.4.2+)
+# ----------------------------------------------------------------------
+# The pipeline hardcodes a 20 s read timeout on every OpenAI-compatible
+# LLM call. When the user picks a backend whose first-byte latency can
+# exceed 20 s (Ollama cold-load, large local models, slow vLLM), the
+# call times out and the user hears the canned "Wow I'm a bit slow
+# today" fallback. The ``llm_request_timeout_s`` dict under settings
+# stores one timeout per backend; this helper resolves it for the
+# currently selected backend and falls back to a sane default if the
+# key is missing or out of range.
+#
+# The values are consumed by ``PipelineProcess._maybe_install_openai_
+# timeout_patch`` (see web_ui/process_manager.py) which writes
+# ``DASHBOARD_LLM_READ_TIMEOUT_S`` into the subprocess env; the
+# ``_openai_timeout_patch`` module in the venv's site-packages uses
+# that env var to override the openai SDK's httpx timeout before the
+# pipeline's OpenAI(...) constructor runs.
+
+# Per-backend defaults (used when the key is missing or invalid). Keep
+# in sync with the seed in ``get_defaults()``. The keys are the
+# pipeline's ``--llm-backend`` enum values (transformers / mlx-lm /
+# responses-api / chat-completions) plus the synthetic "hermes" key
+# used by the dashboard when ``--llm-backend-type == 'hermes'``.
+_LLM_REQUEST_TIMEOUT_DEFAULTS_S: dict[str, int] = {
+    "hermes": 0,            # matches what the Hermes tab already picks
+    "ollama": 120,          # cold loads routinely exceed 20 s locally
+    "vllm": 120,
+    "llama.cpp": 120,
+    "chat-completions": 120,  # generic OpenAI-compat fallback
+    "responses-api": 20,    # hosted OpenAI / HF Inference: pipeline default is fine
+    "mlx-lm": 120,
+    "transformers": 120,
+}
+
+
+def get_llm_request_timeout_s(settings: dict[str, Any]) -> int:
+    """Resolve the LLM request read timeout (seconds) for the selected backend.
+
+    Returns ``0`` for "wait forever" (no timeout); positive integers
+    are seconds. Falls back to per-backend defaults when the user's
+    ``llm_request_timeout_s[<backend>]`` entry is missing, non-int,
+    or negative.
+
+    ``backend_key`` is the ``--llm-backend`` flag value, with one
+    special case: when ``--llm-backend-type == "hermes"`` the user is
+    routed through the dashboard's hermes proxy, which always maps to
+    the ``"hermes"`` key (default 0 = infinite). All other paths use
+    the ``--llm-backend`` value verbatim, e.g. ``"ollama"``,
+    ``"chat-completions"``, ``"responses-api"``, ``"mlx-lm"``.
+
+    Safe to call on a partially-loaded settings dict (e.g. right
+    after first paint, before the user has saved anything).
+    """
+    if not isinstance(settings, dict):
+        return _LLM_REQUEST_TIMEOUT_DEFAULTS_S["chat-completions"]
+    # Hermes-proxy path: the --llm-backend is still "chat-completions"
+    # (the pipeline talks OpenAI-compat) but the user picked Hermes in
+    # the LLM tab. Always honor the "hermes" key in that case so the
+    # default of 0 (wait forever) wins even if the user has a
+    # chat-completions value saved from a non-hermes setup.
+    backend_type = (settings.get("--llm-backend-type") or "").strip().lower()
+    backend = (settings.get("--llm-backend") or "").strip().lower()
+    if backend_type == "hermes":
+        key = "hermes"
+    else:
+        key = backend or "chat-completions"
+    raw_map = settings.get("llm_request_timeout_s")
+    if isinstance(raw_map, dict):
+        raw = raw_map.get(key)
+        if raw is not None:
+            try:
+                v = int(raw)
+            except (TypeError, ValueError):
+                v = _LLM_REQUEST_TIMEOUT_DEFAULTS_S.get(key, 120)
+            if v < 0:
+                v = _LLM_REQUEST_TIMEOUT_DEFAULTS_S.get(key, 120)
+            return v
+    return _LLM_REQUEST_TIMEOUT_DEFAULTS_S.get(key, 120)
+
+
+# Preset list for the LLM Settings-tab dropdown (matches what the user
+# sees in the UI). Order matters -- the last entry "Custom..." opens a
+# number input. Keep in sync with ``renderLlmRequestTimeoutField`` in
+# web_ui/static/app.js.
+LLM_REQUEST_TIMEOUT_PRESETS_S: list[int] = [0, 30, 60, 120, 300, 600]
+
+
+def is_known_llm_request_timeout_preset(value: int) -> bool:
+    """True iff ``value`` is one of the dropdown presets (not Custom)."""
+    return int(value) in LLM_REQUEST_TIMEOUT_PRESETS_S

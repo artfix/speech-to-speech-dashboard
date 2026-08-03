@@ -44,10 +44,13 @@ Env var contract
 ================
 
 ``DASHBOARD_LLM_READ_TIMEOUT_S`` -- integer, set by the dashboard
-when ``--llm-backend-type == 'hermes'``.
+before every pipeline start, regardless of LLM backend. The value is
+the user's per-backend pick from the LLM Settings tab (defaults:
+hermes = 0, ollama/vllm/llama.cpp/mlx-lm/transformers = 120,
+responses-api = 20).
 
-* ``0`` (default) means *no timeout* -- ``httpx.Timeout(None)``.
-  Wait forever for the LLM to close the stream.
+* ``0`` means *no timeout* -- ``httpx.Timeout(None)``. Wait forever
+  for the LLM to close the stream.
 * ``>0`` -- read timeout in seconds, ``httpx.Timeout(N)``.
 
 If the env var is unset, invalid, or set to a non-integer, the patch
