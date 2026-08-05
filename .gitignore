@@ -249,3 +249,6 @@ web_ui/wheels/
 
 # Dashboard pipeline log files (timestamped, one per pipeline run).
 logs/
+
+# Claude Code session state (worktrees, transcripts, plans).
+.claude/

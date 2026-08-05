@@ -2508,15 +2508,104 @@ function renderHermesTab(tab) {
         target: '_blank', rel: 'noopener noreferrer',
     }, '↗ Open Hermes Dashboard');
     tab.appendChild(el('div', { class: 'btn-row' }, [btnStart, btnStop]));
-    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Model'));
+
+    // ---- Hermes api_server endpoint ----------------------------------
+    // These three values control where the dashboard's reverse proxy
+    // (and therefore the pipeline's LLM slot) talks to hermes-agent.
+    // They are NOT the upstream LLM that hermes uses internally; that is
+    // configured via `hermes config` in your terminal.
+    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Hermes endpoint'));
+    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '12px', maxWidth: '720px' } },
+        'Host, port, and advertised model for the hermes api_server. ' +
+        'The pipeline connects here via the Hermes Agent toggle in the LLM tab. ' +
+        'The real LLM that hermes talks to is set via `hermes config` in your terminal.'));
+
+    // Ensure state.settings.hermes is an object so the form has
+    // somewhere to write. Mirrors how state.settings.env is treated
+    // elsewhere — never trust the server shape.
+    if (!state.settings.hermes || typeof state.settings.hermes !== 'object') {
+        state.settings.hermes = {};
+    }
+
+    const _hermesCfg = () => state.settings.hermes;
+    const _hermesVal = (key, fallback) => {
+        const v = _hermesCfg()[key];
+        return v != null ? v : fallback;
+    };
+    const _setHermesVal = (key, value) => { _hermesCfg()[key] = value; };
+
+    // Persist the whole hermes block to disk on blur. We write the
+    // entire object so concurrent edits to different fields don't
+    // clobber each other.
+    const _persistHermesConfig = async () => {
+        try {
+            await postJSON('/api/settings/patch', { hermes: _hermesCfg() });
+            state.saved = true;
+        } catch (e) {
+            toast('Hermes config save failed: ' + e.message, 'error', 4000);
+        }
+    };
+
+    const hostInput = el('input', {
+        type: 'text', id: 'hermes-host', class: 'field-input',
+        style: { width: '160px' },
+        oninput: (e) => _setHermesVal('host', e.target.value),
+        onblur: () => _persistHermesConfig(),
+    });
+    hostInput.value = _hermesVal('host', '127.0.0.1');
+
+    const portInput = el('input', {
+        type: 'number', id: 'hermes-port', class: 'field-input',
+        min: '1', max: '65535', step: '1', style: { width: '100px' },
+        oninput: (e) => _setHermesVal('port', parseInt(e.target.value, 10) || 8642),
+        onblur: () => _persistHermesConfig(),
+    });
+    portInput.value = String(_hermesVal('port', 8642));
+
+    const _hermesField = (labelText, inputEl, helpText) => {
+        const hover = helpText.length > 220 ? helpText.slice(0, 217) + '…' : helpText;
+        return el('div', { class: 'field' }, [
+            el('label', { class: 'field-label', for: inputEl.id }, [
+                labelText,
+                el('span', { class: 'field-flag' }, ''),
+                el('button', {
+                    type: 'button', class: 'help-btn', title: hover,
+                    onclick: (e) => {
+                        e.preventDefault();
+                        const field = e.currentTarget.closest('.field');
+                        const help = field && field.querySelector('.field-help');
+                        if (help) help.classList.toggle('visible');
+                    },
+                }, '?'),
+            ]),
+            inputEl,
+            el('div', { class: 'field-help' }, helpText),
+        ]);
+    };
+
+    tab.appendChild(_hermesField(
+        'api_server host',
+        hostInput,
+        'Bind address for the hermes api_server. Default 127.0.0.1 keeps it on loopback. ' +
+        'Change only if you run hermes on a different machine and have network routing in place.'
+    ));
+    tab.appendChild(_hermesField(
+        'api_server port',
+        portInput,
+        'TCP port for the hermes api_server. Default 8642. The pipeline connects through ' +
+        'the dashboard reverse proxy, so this port only needs to be reachable from the dashboard.'
+    ));
+
+    // Read-only status line: actual running model + endpoint.
+    // The model is whatever hermes reports on /v1/models; the user picks
+    // it via `hermes config` / `hermes model` in their terminal, not here.
     const modelLine = el('div', { class: 'text-dim', id: 'hermes-model-line' },
-        'Model: (not loaded yet)');
+        'Model: (start hermes to see)');
     tab.appendChild(modelLine);
-    // Hint that the model is owned by hermes, not the dashboard.
     const modelHint = el('div', { class: 'text-dim', id: 'hermes-model-hint',
         style: { fontSize: '12px', marginTop: '4px' } },
-        'Change via `hermes model` in your terminal. The dashboard ' +
-        'just displays whatever hermes has loaded.');
+        'Model is picked inside hermes (`hermes config` / `hermes model`). ' +
+        'The dashboard only shows what hermes reports.');
     tab.appendChild(modelHint);
 
     // ---- LLM read timeout knob (Hermes-only) --------------------------
@@ -2873,7 +2962,13 @@ async function hermesFillerSave(patch) {
 async function hermesStart(btnStart, btnStop) {
     if (btnStart) btnStart.disabled = true;
     try {
-        const r = await postJSON('/api/hermes/start', {});
+        const cfg = state.settings.hermes || {};
+        const body = {
+            host: cfg.host || '127.0.0.1',
+            port: Number.isFinite(parseInt(cfg.port, 10)) ? parseInt(cfg.port, 10) : 8642,
+            model_name: cfg.model_name || '',
+        };
+        const r = await postJSON('/api/hermes/start', body);
         toast(r.status && r.status.running
             ? 'Hermes started. Model loading...'
             : 'Hermes starting...', 'info', 2500);
