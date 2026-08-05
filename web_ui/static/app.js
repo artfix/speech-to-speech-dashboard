@@ -350,12 +350,26 @@ function buildNavAndTabs() {
     for (const t of TAB_DEFS) {
         main.appendChild(el('section', { class: 'tab', id: `tab-${t.id}`, dataset: { tab: t.id } }));
     }
-    activateTab('mode');
+    activateTab(_initialTabId());
 }
 
 function activateTab(id) {
     $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.tab === id));
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === id));
+    // Remember the active tab in the URL hash so a page refresh lands
+    // on the same tab instead of snapping back to Mode.
+    if (history.replaceState && id) {
+        history.replaceState(null, '', `#${id}`);
+    }
+}
+
+function _initialTabId() {
+    // Hash-based tab persistence. Only accept hashes that match a real tab.
+    const raw = (window.location.hash || '').replace(/^#/, '');
+    if (raw && TAB_DEFS.some(t => t.id === raw)) {
+        return raw;
+    }
+    return 'mode';
 }
 
 // ---- Form rendering --------------------------------------------------
