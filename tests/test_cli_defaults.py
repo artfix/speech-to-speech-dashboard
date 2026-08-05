@@ -140,7 +140,7 @@ def test_parse_arguments_accepts_smart_turn_options():
         sys.argv = original_argv
 
     vad_args = args.vad_handler_kwargs
-    assert vad_args.smart_turn is False
+    assert vad_args.smart_turn is True
     assert vad_args.smart_turn_model_path == "/models/smart-turn.onnx"
     assert vad_args.smart_turn_threshold == 0.7
     assert vad_args.smart_turn_max_wait_ms == 2500
@@ -151,12 +151,12 @@ def test_parse_arguments_accepts_smart_turn_options():
 def test_parse_arguments_can_disable_smart_turn():
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech", "--no_smart_turn"]
+        sys.argv = ["speech-to-speech", "--smart_turn"]
         args = parse_arguments()
     finally:
         sys.argv = original_argv
 
-    assert args.vad_handler_kwargs.smart_turn is False
+    assert args.vad_handler_kwargs.smart_turn is True
 
 
 def test_parse_arguments_rejects_removed_smart_turn_device_option():
@@ -183,7 +183,7 @@ def test_parse_arguments_accepts_qwen3_tts_backend_override():
 def test_parse_arguments_accepts_raw_websocket_mode():
     original_argv = sys.argv[:]
     try:
-        sys.argv = ["speech-to-speech", "--mode", "raw-websocket", "--no_smart_turn"]
+        sys.argv = ["speech-to-speech", "--mode", "raw-websocket"]
         args = parse_arguments()
     finally:
         sys.argv = original_argv

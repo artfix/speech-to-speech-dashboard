@@ -4,6 +4,7 @@ from threading import Event, Thread
 from typing import Literal
 
 import numpy as np
+import pytest
 import torch
 
 from speech_to_speech.pipeline.events import SpeechStartedEvent, SpeechStoppedEvent
