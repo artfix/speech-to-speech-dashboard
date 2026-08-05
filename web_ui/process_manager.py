@@ -31,8 +31,9 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, TextIO
 
 from web_ui.settings_schema import build_argv
 
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 BUFFER_SIZE = 5000
 STOP_TIMEOUT_S = 5.0
+
+# Directory under the repo root where each pipeline run's captured stdout/stderr
+# is written. Persisted logs survive dashboard crashes and restarts.
+LOG_DIR_NAME = "logs"
 
 
 def _default_ld_library_path() -> str:
@@ -189,6 +194,8 @@ class PipelineProcess:
         self._state = _State()
         self._fanout_thread: Optional[threading.Thread] = None
         self._fanout_stop = threading.Event()
+        self._log_dir = self._repo_root / LOG_DIR_NAME
+        self._log_file: Optional[TextIO] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -218,6 +225,7 @@ class PipelineProcess:
             self._state.started_at = time.time()
             self._state.log_index = 0
             self._state.buffer.clear()
+            self._ensure_log_file()
 
             logger.info("Starting pipeline: %s", " ".join(argv))
             self._state.process = self._spawn(argv, env)
@@ -238,6 +246,7 @@ class PipelineProcess:
             if proc is None or proc.poll() is not None:
                 self._state.process = None
                 self._remove_openai_timeout_patch()
+                self._close_log_file()
                 return
             logger.info("Stopping pipeline (pid=%s)", proc.pid)
             self._terminate(proc)
@@ -255,6 +264,7 @@ class PipelineProcess:
             self._state.process = None
             self._state.started_at = None
             self._remove_openai_timeout_patch()
+            self._close_log_file()
 
     def restart(self, settings: dict[str, Any]) -> None:
         self.stop()
@@ -367,6 +377,51 @@ class PipelineProcess:
             )
             self._state.buffer.append(entry)
             self._state.subscriber_queue.put(entry)
+            self._write_log_line(entry)
+
+    def _ensure_log_file(self) -> None:
+        """Open a new timestamped log file for the upcoming pipeline run."""
+        self._close_log_file()
+        try:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = self._log_dir / f"pipeline_{timestamp}.log"
+            self._log_file = open(path, "a", encoding="utf-8", errors="replace")
+            self._write_log_line(
+                LogLine(
+                    index=self._state.log_index + 1,
+                    timestamp=time.time(),
+                    level="INFO",
+                    text=f"[dashboard] Pipeline log file: {path}",
+                )
+            )
+            self._state.log_index += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to open pipeline log file; logs will stay in memory only")
+            self._log_file = None
+
+    def _close_log_file(self) -> None:
+        """Flush and close the current pipeline log file."""
+        fh = self._log_file
+        self._log_file = None
+        if fh is not None:
+            try:
+                fh.flush()
+                fh.close()
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to close pipeline log file")
+
+    def _write_log_line(self, entry: LogLine) -> None:
+        """Append one captured line to the persistent log file, if open."""
+        fh = self._log_file
+        if fh is None:
+            return
+        ts = datetime.fromtimestamp(entry.timestamp).isoformat(timespec="milliseconds")
+        try:
+            fh.write(f"{ts} [{entry.level}] {entry.text}\n")
+        except Exception:  # noqa: BLE001
+            # Logging must never crash the dashboard.
+            logger.exception("Failed to write pipeline log line")
 
     def _fanout_loop(self) -> None:
         """Single consumer of the log queue; calls each subscriber without blocking."""

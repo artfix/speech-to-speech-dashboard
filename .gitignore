@@ -246,3 +246,6 @@ voices/
 # first need into ``web_ui/wheels/`` and the directory stays ignored so the
 # download doesn't accidentally end up in git.
 web_ui/wheels/
+
+# Dashboard pipeline log files (timestamped, one per pipeline run).
+logs/
