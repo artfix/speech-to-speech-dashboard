@@ -98,10 +98,21 @@ def _read_settings() -> Optional[dict[str, Any]]:
     if not SETTINGS_PATH.exists():
         return None
     try:
-        return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("Failed to read %s: %s", SETTINGS_PATH, e)
         return None
+
+    # One-time migration: upstream v0.2.12 renamed the raw PCM mode from
+    # "websocket" to "raw-websocket" and removed the compatibility alias.
+    # Old web_ui_settings.json files saved with the previous default would
+    # otherwise fail to start the pipeline after the rename. We rewrite the
+    # value on load so users don't have to recreate their settings.
+    if settings.get("mode") == "websocket":
+        settings["mode"] = "raw-websocket"
+        _write_settings(settings)
+        logger.info("Migrated saved mode 'websocket' -> 'raw-websocket'")
+    return settings
 
 
 def _write_settings(settings: dict[str, Any]) -> None:
