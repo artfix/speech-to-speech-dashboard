@@ -115,6 +115,16 @@ class ParsedArguments:
     chatterbox_tts_handler_kwargs: ChatterboxTTSHandlerArguments
 
 
+def validate_smart_turn_mode(
+    module_kwargs: ModuleArguments,
+    vad_handler_kwargs: VADHandlerArguments,
+) -> None:
+    if vad_handler_kwargs.smart_turn and module_kwargs.mode != "realtime":
+        raise ValueError(
+            "--smart_turn is only supported with --mode realtime; pass --no_smart_turn when using another mode"
+        )
+
+
 def rename_args(args: Any, prefix: str) -> None:
     """
     Rename arguments by removing the prefix and prepares the gen_kwargs.
@@ -213,7 +223,7 @@ def parse_arguments() -> ParsedArguments:
     by_type: dict[type, Any] = {type(obj): obj for obj in parsed}
     logger.debug("Parsed %d argument classes: %s", len(by_type), [t.__name__ for t in by_type])
 
-    return ParsedArguments(
+    args = ParsedArguments(
         module_kwargs=by_type[ModuleArguments],
         socket_receiver_kwargs=by_type[SocketReceiverArguments],
         socket_sender_kwargs=by_type[SocketSenderArguments],
@@ -239,6 +249,8 @@ def parse_arguments() -> ParsedArguments:
         qwen3_tts_handler_kwargs=by_type[Qwen3TTSHandlerArguments],
         chatterbox_tts_handler_kwargs=by_type[ChatterboxTTSHandlerArguments],
     )
+    validate_smart_turn_mode(args.module_kwargs, args.vad_handler_kwargs)
+    return args
 
 
 def setup_logger(log_level: str) -> None:
@@ -1106,6 +1118,7 @@ def main() -> None:
         args.qwen3_tts_handler_kwargs,
         args.chatterbox_tts_handler_kwargs,
     )
+    validate_smart_turn_mode(args.module_kwargs, args.vad_handler_kwargs)
 
     # Validate after prepare_all_args(): --local_mac_optimal_settings mutates
     # module_kwargs.mode to "local", so checking before would let
