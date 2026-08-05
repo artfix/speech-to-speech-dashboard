@@ -29,6 +29,7 @@ from speech_to_speech.LLM.base_openai_compatible_language_model import (
     AssistantMessage,
     BaseOpenAICompatibleHandler,
     ProviderEvent,
+    ReasoningDelta,
     TextDelta,
     ToolCall,
     Usage,
@@ -95,6 +96,12 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
     def warmup(self) -> None:
         logger.info(f"Warming up {self.__class__.__name__}")
         start = time.time()
+        # ``max_completion_tokens`` caps the response length on Chat
+        # Completions. Reasoning models can otherwise emit enough
+        # chain-of-thought to fill the context window and never reach a
+        # clean ``finish_reason`` — hangs the pipeline. Mirrors Ollama's
+        # ``num_predict`` default of 128.
+        warmup_kwargs: dict[str, Any] = {"max_completion_tokens": self.max_tokens} if self.max_tokens else {}
         self.client.with_options(max_retries=WARMUP_MAX_RETRIES).chat.completions.create(
             model=self.model_name,
             messages=[
@@ -103,6 +110,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             ],
             extra_body=self._extra_body,
             timeout=self.warmup_timeout,
+            **warmup_kwargs,
         )
         end = time.time()
         logger.info(f"{self.__class__.__name__}:  warmed up! time: {(end - start):.3f} s")
@@ -113,16 +121,19 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         model_name = self.model_name
         timeout = self.request_timeout
         extra_body = self._extra_body
+        max_tokens = self.max_tokens
 
         def generate(system: str, user: str) -> str:
+            kwargs: dict[str, Any] = {"timeout": timeout, "extra_body": extra_body}
+            if max_tokens:
+                kwargs["max_completion_tokens"] = max_tokens
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                extra_body=extra_body,
-                timeout=timeout,
+                **kwargs,
             )
             return response.choices[0].message.content or ""
 
@@ -194,6 +205,10 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         create_kwargs: dict[str, Any] = dict(optional_kwargs)
         if self.stream:
             create_kwargs["stream_options"] = {"include_usage": True}
+        # Same reasoning-model cap as warmup: bound the output so the
+        # stream reaches a clean ``finish_reason``.
+        if self.max_tokens:
+            create_kwargs.setdefault("max_completion_tokens", self.max_tokens)
         return self.client.chat.completions.create(
             model=self.model_name,
             messages=api_input,  # type: ignore[arg-type]  # runtime dicts match the Chat Completions message shape
@@ -235,6 +250,13 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             if text_piece:
                 raw_text += text_piece
                 yield TextDelta(text=text_piece)
+            # Reasoning tokens from thinking models (Qwen3, DeepSeek-R1, gpt-oss,
+            # OpenAI o-series) arrive in a separate `reasoning_content` field.
+            # Yield as ReasoningDelta — it is silently dropped before TTS by the
+            # LMOutputProcessor's isinstance checks. Phase 2 may surface to logs.
+            reasoning_piece = getattr(delta, "reasoning_content", None)
+            if reasoning_piece:
+                yield ReasoningDelta(text=reasoning_piece)
 
         if raw_text.strip():
             yield AssistantMessage(content=[AssistantContent(type="output_text", text=raw_text)])

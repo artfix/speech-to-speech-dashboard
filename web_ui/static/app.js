@@ -584,13 +584,12 @@ function renderSettingsTab(tab, groupId) {
 // doesn't work the way you'd expect" callout.
 const FIELD_WARNINGS = {
     "--responses-api-num-ctx": (
-        "⚠ NOT WORKING with Ollama as of this build. Ollama's " +
-        "/v1/chat/completions endpoint silently ignores options.num_ctx " +
-        "(upstream issue #16814, fix PR #16825 still unmerged). " +
-        "The value you set here is sent to Ollama but Ollama loads the " +
-        "model at its native context instead. Workaround: set the " +
-        "context in the Ollama Modelfile (PARAMETER num_ctx N) or via " +
-        "OLLAMA_CONTEXT_LENGTH on the Ollama machine."
+        "⚠ Ollama-only. This field is sent as extra_body={'options': " +
+        "{'num_ctx': N}} on every request, which is the Ollama-native " +
+        "key. llama.cpp / vLLM / hosted OpenAI ignore it. Use it only " +
+        "when --responses-api-base-url points at an Ollama server. For " +
+        "llama.cpp, set the context window with `-c N` on the llama " +
+        "serve command instead."
     ),
 };
 
@@ -1095,6 +1094,25 @@ function updateSubgroupVisibility() {
 // every change; we just toggle the `.field-disabled` class on each field's
 // wrapper, which CSS uses to lower opacity and disable the input.
 function applyDisabledStates() {
+    // 0.4.4+: re-evaluate the Ollama-only field guards on every state
+    // change so editing --responses-api-base-url instantly hides/shows
+    // --llm-keepalive, --ollama-load-timeout-seconds, --responses-api-
+    // num-ctx and the Ollama lifecycle section. Keeps state in sync
+    // without forcing a tab re-render.
+    const ollamaUrl = _llmBaseUrlLooksLikeOllama();
+    for (const id of ['llm-keepalive-section', 'ollama-load-timeout-section', 'ollama-lifecycle-section']) {
+        const wrap = document.getElementById(id);
+        if (wrap) wrap.style.display = ollamaUrl ? '' : 'none';
+    }
+    // --responses-api-num-ctx is Ollama-only too (sent as the Ollama-
+    // native extra_body={"options":{"num_ctx":N}}; llama.cpp / vLLM /
+    // OpenAI ignore it). Hide the whole .field wrap when the URL isn't
+    // Ollama.
+    const numCtxInput = document.getElementById('f---responses-api-num-ctx');
+    if (numCtxInput) {
+        const fieldWrap = numCtxInput.closest('.field');
+        if (fieldWrap) fieldWrap.style.display = ollamaUrl ? '' : 'none';
+    }
     for (const group of state.schema.groups) {
         for (const f of [...(group.fields || []), ...((group.subgroups || []).flatMap(s => s.fields || []))]) {
             if (!f.disabled_when) continue;
@@ -1289,7 +1307,16 @@ function renderKeepaliveField() {
     }
 
     const help = el('div', { class: 'field-help', id: `help-${flag}` }, helpText);
-    return el('div', { class: 'field full' }, [label, sel, help]);
+    // 0.4.4+: hide the Ollama-only keepalive field when the user is not
+    // pointing the dashboard at an Ollama server (e.g. llama.cpp,
+    // vLLM, hosted OpenAI). Mirrors the guard renderOllamaLifecycleField
+    // already uses. Setting id="llm-keepalive-section" lets any future
+    // reactive re-render target it explicitly.
+    const wrap = el('div', { class: 'field full', id: 'llm-keepalive-section' }, [label, sel, help]);
+    if (!_llmBaseUrlLooksLikeOllama()) {
+        wrap.style.display = 'none';
+    }
+    return wrap;
 }
 
 // 0.3.2+: Ollama model dropdown now renders correctly without a
@@ -1389,7 +1416,15 @@ function renderOllamaLoadTimeoutField() {
     // Make sure state has a sane value even if nothing else has set it.
     if (state.settings[flag] == null) state.settings[flag] = 60;
     const help = el('div', { class: 'field-help', id: `help-${flag}` }, helpText);
-    return el('div', { class: 'field full' }, [label, sel, help]);
+    // 0.4.4+: hide the Ollama-only load-timeout field when the user is
+    // not pointing at Ollama. Mirrors the guard renderOllamaLifecycleField
+    // uses. The setting itself stays in web_ui_settings.json for users
+    // who switch back to Ollama later.
+    const wrap = el('div', { class: 'field full', id: 'ollama-load-timeout-section' }, [label, sel, help]);
+    if (!_llmBaseUrlLooksLikeOllama()) {
+        wrap.style.display = 'none';
+    }
+    return wrap;
 }
 
 

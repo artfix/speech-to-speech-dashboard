@@ -14,6 +14,8 @@ from openai.types.responses import (
     ResponseFunctionToolCall,
     ResponseOutputItemDoneEvent,
     ResponseOutputMessage,
+    ResponseReasoningItem,
+    ResponseReasoningTextDeltaEvent,
     ResponseTextDeltaEvent,
 )
 
@@ -22,6 +24,7 @@ from speech_to_speech.LLM.base_openai_compatible_language_model import (
     AssistantMessage,
     BaseOpenAICompatibleHandler,
     ProviderEvent,
+    ReasoningDelta,
     TextDelta,
     ToolCall,
     Usage,
@@ -39,6 +42,12 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
     def warmup(self) -> None:
         logger.info(f"Warming up {self.__class__.__name__}")
         start = time.time()
+        # ``max_output_tokens`` caps the response length. Reasoning models
+        # (Qwen3.5, DeepSeek-R1, gpt-oss) can otherwise fill the entire
+        # context window with chain-of-thought and never reach the
+        # ``response.completed`` event — which hangs the pipeline
+        # subprocess. Mirrors Ollama's ``num_predict`` default of 128.
+        warmup_kwargs: dict[str, Any] = {"max_output_tokens": self.max_tokens} if self.max_tokens else {}
         self.client.with_options(max_retries=WARMUP_MAX_RETRIES).responses.create(
             model=self.model_name,
             input=[
@@ -54,6 +63,7 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
                 },
             ],
             timeout=self.warmup_timeout,
+            **warmup_kwargs,
         )
         end = time.time()
         logger.info(f"{self.__class__.__name__}:  warmed up! time: {(end - start):.3f} s")
@@ -63,8 +73,12 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
         client = self.client
         model_name = self.model_name
         timeout = self.request_timeout
+        max_tokens = self.max_tokens
 
         def generate(system: str, user: str) -> str:
+            kwargs: dict[str, Any] = {"timeout": timeout}
+            if max_tokens:
+                kwargs["max_output_tokens"] = max_tokens
             response = client.responses.create(
                 model=model_name,
                 input=[
@@ -79,7 +93,7 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
                         "content": [{"type": "input_text", "text": user}],
                     },
                 ],
-                timeout=timeout,
+                **kwargs,
             )
             return response.output_text
 
@@ -99,13 +113,18 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
         return optional_kwargs
 
     def _request(self, api_input: Any, optional_kwargs: dict[str, Any]) -> Any:
+        request_kwargs: dict[str, Any] = dict(optional_kwargs)
+        # Same reasoning-model cap as warmup: bound the output so the
+        # stream reaches ``response.completed`` cleanly.
+        if self.max_tokens:
+            request_kwargs.setdefault("max_output_tokens", self.max_tokens)
         return self.client.responses.create(
             model=self.model_name,
             input=api_input,
             stream=self.stream,
             extra_body=self._extra_body,
             timeout=self.request_timeout,
-            **optional_kwargs,
+            **request_kwargs,
         )
 
     @staticmethod
@@ -118,12 +137,23 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
         for raw_event in api_response:
             if isinstance(raw_event, ResponseTextDeltaEvent):
                 yield TextDelta(text=raw_event.delta)
+            elif isinstance(raw_event, ResponseReasoningTextDeltaEvent):
+                # Reasoning tokens: stripped from TTS (the lm_output_processor
+                # only forwards LLMResponseChunk / AssistantMessage / ToolCall /
+                # Usage, so ReasoningDelta is silently dropped before speech).
+                # Phase 2 may surface these to the dashboard log sink.
+                yield ReasoningDelta(text=raw_event.delta)
             elif isinstance(raw_event, ResponseOutputItemDoneEvent):
                 item = raw_event.item
                 if isinstance(item, ResponseFunctionToolCall):
                     item.call_id = _generate_id("call")
                     item.id = _generate_id("fc")
                     yield ToolCall(item=item)
+                elif isinstance(item, ResponseReasoningItem):
+                    # End-of-reasoning marker. Same stripping rule: yield
+                    # ReasoningDelta (still not forwarded to TTS) so any future
+                    # log sink sees the boundary.
+                    yield ReasoningDelta(text="")
                 elif isinstance(item, ResponseOutputMessage):
                     yield AssistantMessage(content=self._assistant_content(item.content))
             elif isinstance(raw_event, ResponseCompletedEvent):

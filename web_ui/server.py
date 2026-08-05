@@ -1420,7 +1420,7 @@ def api_install_chatterbox() -> dict[str, Any]:
         if loop is None:
             return
         try:
-            log = LogLine(text=line, level=level, ts=time.time())
+            log = LogLine(text=line, level=level, index=-1, timestamp=time.time())
             asyncio.run_coroutine_threadsafe(
                 state._send_to_all(log.to_dict()), loop
             )
@@ -1535,7 +1535,7 @@ def _ensure_parakeet_onnx_installed_async() -> None:
         if loop is None:
             return
         try:
-            log = LogLine(text=line, level=level, ts=time.time())
+            log = LogLine(text=line, level=level, index=-1, timestamp=time.time())
             asyncio.run_coroutine_threadsafe(
                 state._send_to_all(log.to_dict()), loop
             )
@@ -1599,7 +1599,7 @@ def _ensure_chatterbox_installed_async() -> None:
         if loop is None:
             return
         try:
-            log = LogLine(text=line, level=level, ts=time.time())
+            log = LogLine(text=line, level=level, index=-1, timestamp=time.time())
             asyncio.run_coroutine_threadsafe(
                 state._send_to_all(log.to_dict()), loop
             )
@@ -1787,7 +1787,7 @@ def api_gpu_fix() -> dict[str, Any]:
         if loop is None:
             return
         try:
-            log = LogLine(text=line, level=level, ts=time.time())
+            log = LogLine(text=line, level=level, index=-1, timestamp=time.time())
             asyncio.run_coroutine_threadsafe(
                 state._send_to_all(log.to_dict()), loop
             )
@@ -1877,7 +1877,7 @@ def _publish_log(line: str, level: str = "info") -> None:
     if loop is None:
         return
     try:
-        log = LogLine(text=line, level=level, ts=time.time())
+        log = LogLine(text=line, level=level, index=-1, timestamp=time.time())
         asyncio.run_coroutine_threadsafe(state._send_to_all(log.to_dict()), loop)
     except Exception:  # noqa: BLE001
         logger.debug("Failed to publish log line", exc_info=True)

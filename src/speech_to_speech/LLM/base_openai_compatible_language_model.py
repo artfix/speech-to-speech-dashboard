@@ -72,6 +72,19 @@ class ToolCall(BaseModel):
     item: ResponseFunctionToolCall
 
 
+class ReasoningDelta(BaseModel):
+    """Incremental reasoning text from a thinking/reasoning model.
+
+    Surfaced as a ProviderEvent so the parser can route it explicitly, but
+    NEVER forwarded to TTS — the LLM's chain-of-thought must never reach the
+    robot's speaker. A future opt-in log sink (Phase 2 of
+    ``docs/REASONING_STRIP_PLAN.md``) may forward these to the dashboard's
+    Status & Logs panel for debugging.
+    """
+
+    text: str
+
+
 class Usage(BaseModel):
     """Token accounting for the turn."""
 
@@ -79,7 +92,7 @@ class Usage(BaseModel):
     output_tokens: int
 
 
-ProviderEvent = TextDelta | AssistantMessage | ToolCall | Usage
+ProviderEvent = TextDelta | AssistantMessage | ToolCall | ReasoningDelta | Usage
 
 
 class _Turn(BaseModel):
@@ -137,6 +150,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         disable_thinking: bool = True,
         reasoning_effort: Optional[str] = None,
         num_ctx: Optional[int] = None,
+        max_tokens: Optional[int] = None,
         request_timeout_s: float = 20.0,
         warmup_timeout_s: float = 180.0,
         warmup_system_prompt: Optional[str] = None,
@@ -182,6 +196,15 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         self.user_role = user_role
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # ``max_tokens`` is forwarded to the SDK on every request as the
+        # per-endpoint token cap (``max_completion_tokens`` for Chat
+        # Completions, ``max_output_tokens`` for Responses). Mirrors
+        # Ollama's ``num_predict`` default of 128 so reasoning models
+        # can't fill the context window with chain-of-thought and hang
+        # the pipeline. ``None`` / ``-1`` / ``0`` disables the cap.
+        # We coerce every "no cap" sentinel to ``None`` so the SDK
+        # omits the field entirely.
+        self.max_tokens: int | None = max_tokens if (max_tokens is None or max_tokens > 0) else None
         self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort, num_ctx)
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
         self.warmup()

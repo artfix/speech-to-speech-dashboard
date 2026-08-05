@@ -41,6 +41,18 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
             "context (often 128k) is far larger than needed for short chat turns. Default is None (use provider default)."
         },
     )
+    responses_api_max_tokens: Optional[int] = field(
+        default=128,
+        metadata={
+            "help": "Maximum number of tokens the LLM may generate per response. Forwarded as 'max_completion_tokens' "
+            "to /v1/chat/completions and as 'max_output_tokens' to /v1/responses. Default is 128 to mirror Ollama's "
+            "num_predict default — caps reasoning models (Qwen3.5, DeepSeek-R1, gpt-oss) before they can fill the "
+            "context window with chain-of-thought and hang the pipeline. Bump this up (e.g. 512, 1024) when you "
+            "want the robot to read longer passages like short stories. Set to -1 to disable (NOT recommended — "
+            "reasoning models may hang the pipeline). Honoured by llama.cpp / vLLM / Ollama; the official OpenAI "
+            "server also accepts it."
+        },
+    )
     responses_api_warmup_timeout_s: float = field(
         default=180.0,
         metadata={
