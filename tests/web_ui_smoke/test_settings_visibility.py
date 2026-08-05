@@ -21,6 +21,7 @@ checked:
 3. Every backend dropdown choice is wired into ``backend_meta`` so the
    Guide tab can display it.
 """
+
 from __future__ import annotations
 
 import json
@@ -98,17 +99,13 @@ def test_visible_when_for_every_subgroup(schema, settings, flag_index):
         for sub in g.get("subgroups", []):
             vw = sub["visible_when"]
             spec = flag_index.get(_field_to_flag(vw["field"]))
-            assert spec is not None, (
-                f"visible_when field {vw['field']!r} not in schema "
-                f"(subgroup {sub['id']})"
-            )
+            assert spec is not None, f"visible_when field {vw['field']!r} not in schema (subgroup {sub['id']})"
             choices = spec.get("choices") or []
             # positive: pick the matching choice
             picked = dict(settings)
             picked[_field_to_flag(vw["field"])] = vw["equals"]
             assert _setting_value(picked, vw["field"]) == vw["equals"], (
-                f"subgroup {sub['id']} should be visible when "
-                f"{vw['field']}={vw['equals']!r}"
+                f"subgroup {sub['id']} should be visible when {vw['field']}={vw['equals']!r}"
             )
             # negative: any other choice keeps it hidden
             for other in choices:
@@ -117,8 +114,7 @@ def test_visible_when_for_every_subgroup(schema, settings, flag_index):
                 picked2 = dict(settings)
                 picked2[_field_to_flag(vw["field"])] = other
                 assert _setting_value(picked2, vw["field"]) != vw["equals"], (
-                    f"subgroup {sub['id']} should NOT be visible when "
-                    f"{vw['field']}={other!r}"
+                    f"subgroup {sub['id']} should NOT be visible when {vw['field']}={other!r}"
                 )
 
 
@@ -126,33 +122,24 @@ def test_disabled_when_for_every_field(schema, settings, flag_index):
     """disabled_when rules gray out the field only for values in the rule's
     ``in`` list."""
     for g in schema["groups"]:
-        all_fields = list(g.get("fields", [])) + [
-            f for s in g.get("subgroups", []) for f in s.get("fields", [])
-        ]
+        all_fields = list(g.get("fields", [])) + [f for s in g.get("subgroups", []) for f in s.get("fields", [])]
         for f in all_fields:
             dw = f.get("disabled_when")
             if dw is None:
                 continue
             spec = flag_index.get(_field_to_flag(dw["field"]))
-            assert spec is not None, (
-                f"disabled_when field {dw['field']!r} not in schema "
-                f"(flag {f['flag']})"
-            )
+            assert spec is not None, f"disabled_when field {dw['field']!r} not in schema (flag {f['flag']})"
             for w in dw.get("in", []):
                 picked = dict(settings)
                 picked[_field_to_flag(dw["field"])] = w
-                assert w in (dw.get("in") or []), (
-                    f"flag {f['flag']} should be disabled when "
-                    f"{dw['field']}={w!r}"
-                )
-            for other in (spec.get("choices") or []):
+                assert w in (dw.get("in") or []), f"flag {f['flag']} should be disabled when {dw['field']}={w!r}"
+            for other in spec.get("choices") or []:
                 if other in (dw.get("in") or []):
                     continue
                 picked = dict(settings)
                 picked[_field_to_flag(dw["field"])] = other
                 assert other not in (dw.get("in") or []), (
-                    f"flag {f['flag']} should NOT be disabled when "
-                    f"{dw['field']}={other!r}"
+                    f"flag {f['flag']} should NOT be disabled when {dw['field']}={other!r}"
                 )
 
 
@@ -168,9 +155,7 @@ def test_every_backend_in_meta(schema):
             continue
         spec = next(f for f in g["fields"] if "choices" in f)
         for choice in spec["choices"]:
-            assert choice in declared, (
-                f"{g['id']} choice {choice!r} has no entry in backend_meta"
-            )
+            assert choice in declared, f"{g['id']} choice {choice!r} has no entry in backend_meta"
 
 
 if __name__ == "__main__":

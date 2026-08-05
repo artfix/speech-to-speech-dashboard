@@ -399,9 +399,7 @@ def get_full_schema() -> dict[str, Any]:
             "id": "websocket",
             "title": "WebSocket / Realtime server",
             "description": "Used by `--mode websocket` and `--mode realtime`.",
-            "fields": _schema_for_class(
-                WebSocketStreamerArguments, group="websocket", title="WebSocket"
-            ),
+            "fields": _schema_for_class(WebSocketStreamerArguments, group="websocket", title="WebSocket"),
         }
     )
     groups.append(
@@ -418,11 +416,7 @@ def get_full_schema() -> dict[str, Any]:
 
     # STT: a parent group with the backend dropdown (from ModuleArguments --stt)
     # plus a list of sub-groups, one per backend, that the UI shows/hides.
-    stt_parent_fields = [
-        f
-        for f in _schema_for_class(ModuleArguments, group="stt", title="STT")
-        if f["name"] == "stt"
-    ]
+    stt_parent_fields = [f for f in _schema_for_class(ModuleArguments, group="stt", title="STT") if f["name"] == "stt"]
     stt_subgroups = []
     for value, cls, title, visible in STT_BACKENDS:
         stt_subgroups.append(
@@ -445,9 +439,7 @@ def get_full_schema() -> dict[str, Any]:
 
     # LLM: same pattern.
     llm_parent_fields = [
-        f
-        for f in _schema_for_class(ModuleArguments, group="llm", title="LLM")
-        if f["name"] == "llm_backend"
+        f for f in _schema_for_class(ModuleArguments, group="llm", title="LLM") if f["name"] == "llm_backend"
     ]
     llm_subgroups = []
     for value, cls, title, visible in LLM_BACKENDS:
@@ -470,11 +462,7 @@ def get_full_schema() -> dict[str, Any]:
     )
 
     # TTS: same pattern.
-    tts_parent_fields = [
-        f
-        for f in _schema_for_class(ModuleArguments, group="tts", title="TTS")
-        if f["name"] == "tts"
-    ]
+    tts_parent_fields = [f for f in _schema_for_class(ModuleArguments, group="tts", title="TTS") if f["name"] == "tts"]
     tts_subgroups = []
     for value, cls, title, visible in TTS_BACKENDS:
         sub_fields = _schema_for_class(cls, group="tts", title=title)
@@ -527,10 +515,7 @@ def get_full_schema() -> dict[str, Any]:
 def _backend_meta() -> dict[str, Any]:
     """Lightweight metadata about backends for the Guide / overview."""
     return {
-        "stt": [
-            {"value": v, "title": title}
-            for v, _, title, _ in STT_BACKENDS
-        ],
+        "stt": [{"value": v, "title": title} for v, _, title, _ in STT_BACKENDS],
         "llm": [{"value": v, "title": title} for v, _, title, _ in LLM_BACKENDS],
         "tts": [{"value": v, "title": title} for v, _, title, _ in TTS_BACKENDS],
     }
@@ -881,12 +866,12 @@ def settings_from_argv(flags: list[str]) -> dict[str, str]:
 # responses-api / chat-completions) plus the synthetic "hermes" key
 # used by the dashboard when ``--llm-backend-type == 'hermes'``.
 _LLM_REQUEST_TIMEOUT_DEFAULTS_S: dict[str, int] = {
-    "hermes": 0,            # matches what the Hermes tab already picks
-    "ollama": 120,          # cold loads routinely exceed 20 s locally
+    "hermes": 0,  # matches what the Hermes tab already picks
+    "ollama": 120,  # cold loads routinely exceed 20 s locally
     "vllm": 120,
     "llama.cpp": 120,
     "chat-completions": 120,  # generic OpenAI-compat fallback
-    "responses-api": 20,    # hosted OpenAI / HF Inference: pipeline default is fine
+    "responses-api": 20,  # hosted OpenAI / HF Inference: pipeline default is fine
     "mlx-lm": 120,
     "transformers": 120,
 }

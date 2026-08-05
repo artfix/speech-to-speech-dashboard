@@ -109,10 +109,7 @@ def _is_pipeline_hardcoded_20s(timeout: Any) -> bool:
 
     if not isinstance(timeout, httpx.Timeout):
         return False
-    return (
-        timeout.read == _PIPELINE_REQUEST_TIMEOUT_READ_S
-        and timeout.connect == _PIPELINE_REQUEST_TIMEOUT_CONNECT_S
-    )
+    return timeout.read == _PIPELINE_REQUEST_TIMEOUT_READ_S and timeout.connect == _PIPELINE_REQUEST_TIMEOUT_CONNECT_S
 
 
 def _build_replacement_timeout(seconds: int) -> Any:

@@ -545,8 +545,7 @@ class ChatterboxTTSHandler(BaseHandler[TTSIn, TTSOut]):
             # audio flowed in N separate bursts with a small gap between them.
             if gen is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(gen):
                 logger.info(
-                    "TTS generation cancelled (interruption) between sentences "
-                    "(sentence %d/%d)",
+                    "TTS generation cancelled (interruption) between sentences (sentence %d/%d)",
                     sentence_idx,
                     len(sentences),
                 )

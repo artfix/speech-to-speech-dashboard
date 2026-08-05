@@ -109,10 +109,7 @@ def _write_manifest(voices: dict[str, dict[str, Any]]) -> None:
 
 def list_voices() -> list[VoiceEntry]:
     """Return all voices known to the manifest, sorted by name."""
-    return [
-        VoiceEntry(**entry)
-        for entry in sorted(_read_manifest().values(), key=lambda e: e.get("name", ""))
-    ]
+    return [VoiceEntry(**entry) for entry in sorted(_read_manifest().values(), key=lambda e: e.get("name", ""))]
 
 
 def _pt_path(name: str) -> Path:
@@ -126,9 +123,7 @@ def _validate_name(name: str) -> None:
     # --chatterbox-voice CLI flag stays shell-friendly.
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
     if any(c not in allowed for c in name):
-        raise ValueError(
-            f"Voice name {name!r} may only contain letters, digits, '_' and '-'"
-        )
+        raise ValueError(f"Voice name {name!r} may only contain letters, digits, '_' and '-'")
     if len(name) > 64:
         raise ValueError(f"Voice name {name!r} is longer than 64 characters")
 
@@ -361,9 +356,7 @@ def synthesize_test(
     _validate_name(voice)
     pt = _pt_path(voice)
     if not pt.exists():
-        raise FileNotFoundError(
-            f"Voice {voice!r} not found at {pt}. Clone it first, or pick another voice."
-        )
+        raise FileNotFoundError(f"Voice {voice!r} not found at {pt}. Clone it first, or pick another voice.")
 
     # Ensure chatterbox is importable before we try to load the model.
     # Raises a clear ChatterboxNotInstalled if the user hasn't installed it.
@@ -380,9 +373,7 @@ def synthesize_test(
         from chatterbox.mtl_tts import Conditionals  # type: ignore[attr-defined]
     else:
         from chatterbox.tts_turbo import Conditionals  # type: ignore[attr-defined]
-    model.conds = Conditionals.load(str(pt), map_location=from_kwargs["device"]).to(
-        from_kwargs["device"]
-    )
+    model.conds = Conditionals.load(str(pt), map_location=from_kwargs["device"]).to(from_kwargs["device"])
 
     is_turbo = model_variant in ("chatterbox-turbo", "chatterbox-nano")
     is_multilingual = model_variant == "chatterbox-multilingual"

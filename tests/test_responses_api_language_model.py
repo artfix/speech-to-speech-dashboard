@@ -113,6 +113,7 @@ def _make_handler(*, disable_thinking=False, stream=True, cancel_scope=None):
     handler.warmup_system_prompt = "."
     handler.warmup_user_prompt = "."
     handler.warmup_timeout = 20.0
+    handler.max_tokens = 128
     return handler
 
 

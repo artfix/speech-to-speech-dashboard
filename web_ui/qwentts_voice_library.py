@@ -66,15 +66,45 @@ REF_AUDIO_DIR = REPO_ROOT / "voices" / "qwen3_refs"
 # sample sentence is what the test button pre-fills in the modal so the
 # user immediately hears the speaker in its strongest language.
 PRESET_SPEAKERS: list[dict[str, str]] = [
-    {"name": "Vivian",     "language": "chinese",  "label": "Chinese (Mandarin)",     "sample": "你好，我叫 Vivian，这是我的声音。"},
-    {"name": "Serena",     "language": "chinese",  "label": "Chinese (Mandarin)",     "sample": "你好，我叫 Serena，希望你喜欢我的声音。"},
-    {"name": "Uncle_Fu",   "language": "chinese",  "label": "Chinese (Mandarin)",     "sample": "你好，我是 Fu 叔叔，听起来怎么样？"},
-    {"name": "Dylan",      "language": "chinese",  "label": "Chinese (Beijing)",      "sample": "你好，我叫 Dylan，听我说北京话。"},
-    {"name": "Eric",       "language": "chinese",  "label": "Chinese (Sichuan)",      "sample": "你好，我叫 Eric，我讲四川话。"},
-    {"name": "Ryan",       "language": "english",  "label": "English",                "sample": "Hi, I'm Ryan, this is how I sound."},
-    {"name": "Aiden",      "language": "english",  "label": "English",                "sample": "Hi, I'm Aiden, this is my voice."},
-    {"name": "Ono_Anna",   "language": "japanese", "label": "Japanese",               "sample": "こんにちは、Anna です。私の声はこんな感じです。"},
-    {"name": "Sohee",      "language": "korean",   "label": "Korean",                 "sample": "안녕하세요, Sohee 입니다. 제 목소리는 이런 느낌이에요."},
+    {
+        "name": "Vivian",
+        "language": "chinese",
+        "label": "Chinese (Mandarin)",
+        "sample": "你好，我叫 Vivian，这是我的声音。",
+    },
+    {
+        "name": "Serena",
+        "language": "chinese",
+        "label": "Chinese (Mandarin)",
+        "sample": "你好，我叫 Serena，希望你喜欢我的声音。",
+    },
+    {
+        "name": "Uncle_Fu",
+        "language": "chinese",
+        "label": "Chinese (Mandarin)",
+        "sample": "你好，我是 Fu 叔叔，听起来怎么样？",
+    },
+    {
+        "name": "Dylan",
+        "language": "chinese",
+        "label": "Chinese (Beijing)",
+        "sample": "你好，我叫 Dylan，听我说北京话。",
+    },
+    {"name": "Eric", "language": "chinese", "label": "Chinese (Sichuan)", "sample": "你好，我叫 Eric，我讲四川话。"},
+    {"name": "Ryan", "language": "english", "label": "English", "sample": "Hi, I'm Ryan, this is how I sound."},
+    {"name": "Aiden", "language": "english", "label": "English", "sample": "Hi, I'm Aiden, this is my voice."},
+    {
+        "name": "Ono_Anna",
+        "language": "japanese",
+        "label": "Japanese",
+        "sample": "こんにちは、Anna です。私の声はこんな感じです。",
+    },
+    {
+        "name": "Sohee",
+        "language": "korean",
+        "label": "Korean",
+        "sample": "안녕하세요, Sohee 입니다. 제 목소리는 이런 느낌이에요.",
+    },
 ]
 
 
@@ -287,18 +317,22 @@ def synthesize_qwen3_test(
     if ref_audio:
         try:
             import soundfile as sf  # type: ignore[import-not-found]
+
             ref_audio_24k, _ = sf.read(ref_audio, dtype="float32", always_2d=False)
             if hasattr(ref_audio_24k, "ndim") and ref_audio_24k.ndim > 1:
                 # Downmix to mono if the source is stereo.
                 import numpy as np  # noqa: PLC0415
+
                 ref_audio_24k = ref_audio_24k.mean(axis=1).astype(np.float32)
         except ImportError:
             # soundfile may not be available; try scipy.io.wavfile which
             # the venv already has.
             try:
                 from scipy.io import wavfile  # type: ignore[import-not-found]
+
                 sr, data = wavfile.read(ref_audio)
                 import numpy as np  # noqa: PLC0415
+
                 ref_audio_24k = data.astype(np.float32) / np.iinfo(data.dtype).max
                 if hasattr(ref_audio_24k, "ndim") and ref_audio_24k.ndim > 1:
                     ref_audio_24k = ref_audio_24k.mean(axis=1).astype(np.float32)
@@ -306,6 +340,7 @@ def synthesize_qwen3_test(
                     from math import gcd
 
                     from scipy.signal import resample_poly  # type: ignore[import-not-found]
+
                     g = gcd(sr, _NATIVE_SAMPLE_RATE)
                     ref_audio_24k = resample_poly(
                         ref_audio_24k,

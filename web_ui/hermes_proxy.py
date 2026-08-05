@@ -195,10 +195,7 @@ async def _proxy_passthrough(
         return JSONResponse(
             {
                 "error": "hermes_not_running",
-                "message": (
-                    "Hermes Agent is not running. Start it from the "
-                    "Hermes tab in the dashboard."
-                ),
+                "message": ("Hermes Agent is not running. Start it from the Hermes tab in the dashboard."),
             },
             status_code=502,
         )

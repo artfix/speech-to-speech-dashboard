@@ -73,9 +73,7 @@ _HF_WHEEL_DATASET = "ArtFix0/speech-to-speech-wheels"
 # Wheel filenames in the dataset mirror the bundled naming so
 # ``_matching_wheel()`` finds them with no changes.
 _HF_WHEEL_FILENAME = "qwentts_cpp_python-0.3.1-py3-none-linux_x86_64.whl"
-_HF_WHEEL_URL = (
-    f"https://huggingface.co/datasets/{_HF_WHEEL_DATASET}/resolve/main/{_HF_WHEEL_FILENAME}"
-)
+_HF_WHEEL_URL = f"https://huggingface.co/datasets/{_HF_WHEEL_DATASET}/resolve/main/{_HF_WHEEL_FILENAME}"
 _HF_DOWNLOAD_TIMEOUT_S = 600
 
 
@@ -208,8 +206,7 @@ def _download_pascal_wheel() -> Path | None:
                 # Final size sanity: <50 MiB is certainly not a real wheel.
                 if bytes_written < 50 * 1024 * 1024:
                     logger.error(
-                        "HF Dataset wheel download too small (%d bytes); "
-                        "expected ~126 MiB. Treating as failure.",
+                        "HF Dataset wheel download too small (%d bytes); expected ~126 MiB. Treating as failure.",
                         bytes_written,
                     )
                     try:
@@ -309,8 +306,7 @@ def install_pascal_wheel_if_needed(settings: dict[str, Any]) -> dict[str, Any]:
         # deployment, where plain git rejected the 126 MiB wheel. Try
         # downloading from the HF Dataset that holds it.
         logger.info(
-            "No bundled Pascal qwentts wheel found in web_ui/wheels/. "
-            "Attempting to download from HF Dataset %s ...",
+            "No bundled Pascal qwentts wheel found in web_ui/wheels/. Attempting to download from HF Dataset %s ...",
             _HF_WHEEL_DATASET,
         )
         if _download_pascal_wheel() is not None:
@@ -334,6 +330,7 @@ def install_pascal_wheel_if_needed(settings: dict[str, Any]) -> dict[str, Any]:
         # We tried last time and it succeeded; double-check the import still works.
         try:
             import qwentts_cpp  # type: ignore # noqa: F401
+
             result.update({"status": "already-installed", "wheel": str(wheel)})
             return result
         except Exception:
@@ -437,6 +434,7 @@ def _faster_qwen3_tts_path() -> "Path | None":
     """
     try:
         import site  # noqa: PLC0415
+
         sp_paths = [Path(p) for p in site.getsitepackages()]
     except Exception:  # noqa: BLE001
         sp_paths = [Path(p) for p in sys.path if "site-packages" in p]
@@ -502,7 +500,7 @@ def _patch_faster_qwen3_tts_if_needed() -> dict[str, Any]:
         "        # ``QwenTTSError: Speaker enumeration requires ABI v2`` on\n"
         "        # every OpenAI Realtime ``session.update`` that sends a\n"
         "        # ``voice`` field. Returning ``[]`` makes the upstream\n"
-        "        # handler take its existing \"ignore client voice\" branch\n"
+        '        # handler take its existing "ignore client voice" branch\n'
         "        # (logged as a warning) and use the dashboard-configured\n"
         "        # ``--qwen3-tts-speaker`` instead. The 9 CustomVoice\n"
         "        # preset speakers are baked into the model weights and\n"

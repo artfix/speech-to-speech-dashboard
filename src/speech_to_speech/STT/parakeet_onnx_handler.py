@@ -248,9 +248,7 @@ class ParakeetOnnxSTTHandler(BaseSTTHandler):
             return ["CUDAExecutionProvider"]
         if device == "cpu":
             return ["CPUExecutionProvider"]
-        raise ValueError(
-            f"parakeet-onnx: unsupported device {device!r} (want 'auto', 'cuda', or 'cpu')"
-        )
+        raise ValueError(f"parakeet-onnx: unsupported device {device!r} (want 'auto', 'cuda', or 'cpu')")
 
     def _ensure_loaded(self) -> Any:
         """Lazily (re)load the model. Used by setup() and on variant swap.
