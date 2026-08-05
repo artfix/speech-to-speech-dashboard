@@ -83,7 +83,9 @@ def _keep_audio_sentinel(item: Any) -> bool:
     # would leave the release path waiting forever for the drain signal.
     # UNLOAD_TTS also needs to traverse the chain to reach the TTS handler,
     # so it gets the same protection.
-    return _is_audio_done(item) or is_control_message(item, SESSION_END.kind) or is_control_message(item, UNLOAD_TTS.kind)
+    return (
+        _is_audio_done(item) or is_control_message(item, SESSION_END.kind) or is_control_message(item, UNLOAD_TTS.kind)
+    )
 
 
 def _keep_user_text_event(item: Any) -> bool:

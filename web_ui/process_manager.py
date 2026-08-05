@@ -69,6 +69,7 @@ def _default_ld_library_path() -> str:
     """
     try:
         import site  # noqa: PLC0415
+
         sp_paths = [Path(p) for p in site.getsitepackages()]
     except Exception:  # noqa: BLE001
         sp_paths = [Path(p) for p in sys.path if "site-packages" in p]
@@ -408,9 +409,7 @@ class PipelineProcess:
         # there).
         if _DEFAULT_LD:
             existing = out.get("LD_LIBRARY_PATH", "")
-            out["LD_LIBRARY_PATH"] = (
-                _DEFAULT_LD + (":" + existing if existing else "")
-            )
+            out["LD_LIBRARY_PATH"] = _DEFAULT_LD + (":" + existing if existing else "")
         # Force unbuffered output from the child so logs stream in real time.
         out["PYTHONUNBUFFERED"] = "1"
         return out
@@ -479,6 +478,7 @@ class PipelineProcess:
         # Local import keeps the module-load-time cost of settings_schema
         # off the import path for tests that don't touch the pipeline.
         from web_ui.settings_schema import get_llm_request_timeout_s
+
         return get_llm_request_timeout_s(settings)
 
     @classmethod
@@ -492,6 +492,7 @@ class PipelineProcess:
         """
         try:
             import site as _site  # noqa: PLC0415
+
             candidates = [Path(p) for p in _site.getsitepackages()]
         except Exception:  # noqa: BLE001
             candidates = []
@@ -505,9 +506,7 @@ class PipelineProcess:
         return None
 
     @classmethod
-    def _maybe_install_openai_timeout_patch(
-        cls, settings: dict[str, Any], env: dict[str, str]
-    ) -> None:
+    def _maybe_install_openai_timeout_patch(cls, settings: dict[str, Any], env: dict[str, str]) -> None:
         """Install the openai monkey-patch + set the per-backend timeout env var.
 
         As of 0.4.2 the patch is no longer gated on ``--llm-backend-type

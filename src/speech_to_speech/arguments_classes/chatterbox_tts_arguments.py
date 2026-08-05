@@ -65,8 +65,7 @@ class ChatterboxTTSHandlerArguments:
         default=1.2,
         metadata={
             "help": (
-                "Repetition penalty. Only affects 'chatterbox' and 'chatterbox-multilingual' "
-                "variants. Default is 1.2."
+                "Repetition penalty. Only affects 'chatterbox' and 'chatterbox-multilingual' variants. Default is 1.2."
             )
         },
     )

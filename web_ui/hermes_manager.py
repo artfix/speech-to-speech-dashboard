@@ -123,9 +123,7 @@ class _State:
     # Health-probe state. We probe /health on a background thread so
     # ``get_status()`` is always fast (no blocking on the hermes
     # subprocess).
-    health: dict[str, Any] = field(
-        default_factory=lambda: {"ready": False, "checked_at": 0.0, "error": None}
-    )
+    health: dict[str, Any] = field(default_factory=lambda: {"ready": False, "checked_at": 0.0, "error": None})
 
 
 class HermesProcess:
@@ -238,9 +236,7 @@ class HermesProcess:
         # is up but the aiohttp listener may not be bound yet).
         self._health_stop.clear()
         if self._health_thread is None or not self._health_thread.is_alive():
-            self._health_thread = threading.Thread(
-                target=self._health_loop, args=(cfg,), daemon=True
-            )
+            self._health_thread = threading.Thread(target=self._health_loop, args=(cfg,), daemon=True)
             self._health_thread.start()
 
     def stop(self) -> None:
@@ -307,6 +303,7 @@ class HermesProcess:
         if proc is None or proc.poll() is not None or not isinstance(cfg, dict):
             return
         import httpx
+
         url = f"http://{cfg['host']}:{cfg['port']}/v1/runs/stop"
         try:
             with httpx.Client(timeout=2.0) as client:
@@ -339,11 +336,7 @@ class HermesProcess:
                 "pid": proc.pid if proc is not None else None,
                 "exit_code": proc.returncode if proc is not None else None,
                 "started_at": self._state.started_at,
-                "uptime_s": (
-                    (time.time() - self._state.started_at)
-                    if (running and self._state.started_at)
-                    else 0.0
-                ),
+                "uptime_s": ((time.time() - self._state.started_at) if (running and self._state.started_at) else 0.0),
                 "port": cfg["port"] if cfg else DEFAULT_PORT,
                 "host": cfg["host"] if cfg else DEFAULT_HOST,
                 "model_name": cfg["model_name"] if cfg else "",
@@ -482,6 +475,7 @@ class HermesProcess:
         build the right URL).
         """
         import httpx
+
         # Stash the cfg so cancel() doesn't need a separate settings
         # round-trip.
         with self._lock:

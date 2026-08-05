@@ -296,11 +296,7 @@ class Wheel:
         # rest of the project's pins. The matching nvidia-cu wheels
         # (cudnn, cusparselt, nccl) were already installed by the
         # original torch install, so this just swaps the torch DLLs.
-        return (
-            f"uv pip install {self.spec} "
-            f"--index-url {self.index_url} "
-            f"--force-reinstall --no-deps"
-        )
+        return f"uv pip install {self.spec} --index-url {self.index_url} --force-reinstall --no-deps"
 
 
 def _pick_wheel_for_cc(
@@ -484,10 +480,7 @@ def check_gpu() -> GpuCompatReport:
             if wheel.cuda_tag.startswith("cu")
             else wheel.cuda_tag
         )
-        if (
-            report.torch_version == wheel.torch_version
-            and torch_cuda_normalized == wheel_cuda_normalized
-        ):
+        if report.torch_version == wheel.torch_version and torch_cuda_normalized == wheel_cuda_normalized:
             # Already-installed wheel is the right one — driver is too old?
             return report
         report.needs_install = True
@@ -583,8 +576,7 @@ def install_wheel(
     rc = proc.wait()
     if rc == 0:
         publish(
-            f"[gpu-fix] Installed torch=={wheel.torch_version} ({wheel.cuda_tag}). "
-            f"Re-checking GPU compatibility...",
+            f"[gpu-fix] Installed torch=={wheel.torch_version} ({wheel.cuda_tag}). Re-checking GPU compatibility...",
             level="info",
         )
         # Provoke a fresh probe now that the wheel is on disk. We use a

@@ -188,6 +188,7 @@ def _make_source_stamping_subscriber(source: str) -> "callable":
     log_line's dataclass clean and avoids mutating shared state from
     multiple threads.
     """
+
     def _cb(line: LogLine) -> None:
         # Build a payload with the source tag. We do this here (not in
         # ``broadcast``) because ``broadcast`` is the shared sink and
@@ -197,9 +198,8 @@ def _make_source_stamping_subscriber(source: str) -> "callable":
         d["source"] = source
         if not state.websocket_clients or state._loop is None:
             return
-        asyncio.run_coroutine_threadsafe(
-            state._send_to_all(d), state._loop
-        )
+        asyncio.run_coroutine_threadsafe(state._send_to_all(d), state._loop)
+
     return _cb
 
 
@@ -656,6 +656,7 @@ def api_ollama_list_models(
     key = (api_key or "ollama").strip() or "ollama"
     url = base_url.rstrip("/") + "/models"
     import httpx
+
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.get(
@@ -776,6 +777,7 @@ def api_ollama_keepalive(body: dict[str, Any]) -> dict[str, Any]:
         # builds that don't recognise the field.
         payload["options"] = {"num_ctx": num_ctx}
     import httpx
+
     try:
         # ``timeout_s`` is the user-controlled max wait for a cold load
         # (clamped to [5, 600] above). Default 60 s; users on a slow
@@ -828,6 +830,7 @@ def api_ollama_keepalive(body: dict[str, Any]) -> dict[str, Any]:
 # path uses. The frontend hides the whole section when the URL isn't
 # Ollama; these endpoints are a second line of defense.
 
+
 @app.get("/api/ollama/ps")
 def api_ollama_ps(
     base_url: str = Query(...),
@@ -855,6 +858,7 @@ def api_ollama_ps(
         origin = origin[: -len("/v1")]
     url = origin + "/api/ps"
     import httpx
+
     try:
         # 5s is plenty for localhost / LAN. The endpoint is cheap.
         with httpx.Client(timeout=5.0) as client:
@@ -894,12 +898,14 @@ def api_ollama_ps(
             # expires_at is an ISO timestamp; we surface it as a
             # human-readable "until" string for the badge.
             until = it.get("expires_at")
-            models.append({
-                "name": name,
-                "context": ctx_int,
-                "size_vram": it.get("size_vram"),
-                "until": until if isinstance(until, str) else None,
-            })
+            models.append(
+                {
+                    "name": name,
+                    "context": ctx_int,
+                    "size_vram": it.get("size_vram"),
+                    "until": until if isinstance(until, str) else None,
+                }
+            )
         return {"ok": True, "models": models, "error": None}
     except httpx.HTTPError as e:
         return {"ok": False, "models": [], "error": f"{type(e).__name__}: {e}"}
@@ -967,6 +973,7 @@ def api_ollama_reload(body: dict[str, Any]) -> dict[str, Any]:
     import time as _time
 
     import httpx
+
     started = _time.monotonic()
     origin = base_url.rstrip("/")
     if origin.endswith("/v1"):
@@ -1084,6 +1091,7 @@ def _one_shot_keepalive_async(settings: dict[str, Any]) -> None:
 
     def _runner() -> None:
         import httpx
+
         try:
             # 10 s is plenty for a localhost-to-localhost HTTP call. The
             # *real* timeout (potentially 60+ s for a cold load) is the
@@ -1244,6 +1252,7 @@ def api_qwen3_voice_test(body: dict[str, Any]) -> Response:
     language = body.get("language")
     if not language and isinstance(speaker, str) and speaker:
         from web_ui.qwentts_voice_library import PRESET_BY_NAME  # noqa: PLC0415
+
         match = PRESET_BY_NAME.get(speaker)
         if match:
             language = match["language"]
@@ -1297,6 +1306,7 @@ def api_qwen3_delete_ref_audio(name: str) -> dict[str, Any]:
     if not name or "/" in name or "\\" in name or name.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid file name")
     from web_ui.qwentts_voice_library import REF_AUDIO_DIR  # noqa: PLC0415
+
     target = REF_AUDIO_DIR / name
     if not target.is_file() or REF_AUDIO_DIR not in target.resolve().parents:
         raise HTTPException(status_code=404, detail=f"Ref audio {name!r} not found")
@@ -1421,9 +1431,7 @@ def api_install_chatterbox() -> dict[str, Any]:
             return
         try:
             log = LogLine(text=line, level=level, index=-1, timestamp=time.time())
-            asyncio.run_coroutine_threadsafe(
-                state._send_to_all(log.to_dict()), loop
-            )
+            asyncio.run_coroutine_threadsafe(state._send_to_all(log.to_dict()), loop)
         except Exception:  # noqa: BLE001
             logger.debug("Failed to publish install log line", exc_info=True)
 
@@ -1536,9 +1544,7 @@ def _ensure_parakeet_onnx_installed_async() -> None:
             return
         try:
             log = LogLine(text=line, level=level, index=-1, timestamp=time.time())
-            asyncio.run_coroutine_threadsafe(
-                state._send_to_all(log.to_dict()), loop
-            )
+            asyncio.run_coroutine_threadsafe(state._send_to_all(log.to_dict()), loop)
         except Exception:  # noqa: BLE001
             logger.debug("Failed to publish onnx-asr install log line", exc_info=True)
 
@@ -1600,9 +1606,7 @@ def _ensure_chatterbox_installed_async() -> None:
             return
         try:
             log = LogLine(text=line, level=level, index=-1, timestamp=time.time())
-            asyncio.run_coroutine_threadsafe(
-                state._send_to_all(log.to_dict()), loop
-            )
+            asyncio.run_coroutine_threadsafe(state._send_to_all(log.to_dict()), loop)
         except Exception:  # noqa: BLE001
             logger.debug("Failed to publish install log line", exc_info=True)
 
@@ -1650,6 +1654,7 @@ def _schedule_dashboard_restart(delay: float = 1.5) -> None:
     restart (otherwise ``uv sync`` would clobber it back to the lock-pinned
     version).
     """
+
     def _do_restart() -> None:
         time.sleep(delay)
         # Use the env var to find the same uv run the user used
@@ -1694,9 +1699,6 @@ def _schedule_dashboard_restart(delay: float = 1.5) -> None:
             pass
 
     threading.Thread(target=_do_restart, daemon=True, name="dashboard-restart").start()
-
-
-
 
 
 # Locks + state for the background GPU install. The dashboard auto-runs
@@ -1788,9 +1790,7 @@ def api_gpu_fix() -> dict[str, Any]:
             return
         try:
             log = LogLine(text=line, level=level, index=-1, timestamp=time.time())
-            asyncio.run_coroutine_threadsafe(
-                state._send_to_all(log.to_dict()), loop
-            )
+            asyncio.run_coroutine_threadsafe(state._send_to_all(log.to_dict()), loop)
         except Exception:  # noqa: BLE001
             logger.debug("Failed to publish gpu-fix log line", exc_info=True)
 
@@ -1801,14 +1801,12 @@ def api_gpu_fix() -> dict[str, Any]:
             new_report = check_gpu()
             if new_report.supported:
                 _publish(
-                    f"[gpu-fix] GPU now compatible: torch {new_report.torch_version} "
-                    f"supports CC {new_report.gpu_cc}.",
+                    f"[gpu-fix] GPU now compatible: torch {new_report.torch_version} supports CC {new_report.gpu_cc}.",
                     level="info",
                 )
             elif new_report.recommend_cpu:
                 _publish(
-                    "[gpu-fix] Could not find a torch wheel for this GPU. "
-                    "The pipeline will run on CPU.",
+                    "[gpu-fix] Could not find a torch wheel for this GPU. The pipeline will run on CPU.",
                     level="error",
                 )
             else:
@@ -1994,8 +1992,7 @@ def _ensure_gpu_ready(settings: dict[str, Any], timeout_s: float = 600.0) -> tup
     # user's choices are preserved.
     return (
         settings,
-        f"Installed {wheel.torch_version}+{wheel.cuda_tag} for {report.gpu_name}; "
-        f"dashboard is restarting...",
+        f"Installed {wheel.torch_version}+{wheel.cuda_tag} for {report.gpu_name}; dashboard is restarting...",
     )
 
 
@@ -2293,6 +2290,7 @@ def api_hermes_reset_session() -> dict[str, Any]:
 def _get_or_create_proxy_session_id() -> str:
     """Read the proxy's current session id without triggering a reset."""
     from web_ui.hermes_proxy import get_or_create_session_id as _g
+
     return _g()
 
 
@@ -2349,13 +2347,14 @@ def api_hermes_filler(body: dict[str, Any]) -> dict[str, Any]:
                 detail="compress_context_every_n_turns must be a non-negative integer",
             ) from None
     _write_settings(current)
-    return {"ok": True, "filler": {
-        "enabled": hermes_cfg.get("filler_enabled", True),
-        "phrases": hermes_cfg.get("filler_phrases", []),
-        "compress_context_every_n_turns": hermes_cfg.get(
-            "compress_context_every_n_turns", 20
-        ),
-    }}
+    return {
+        "ok": True,
+        "filler": {
+            "enabled": hermes_cfg.get("filler_enabled", True),
+            "phrases": hermes_cfg.get("filler_phrases", []),
+            "compress_context_every_n_turns": hermes_cfg.get("compress_context_every_n_turns", 20),
+        },
+    }
 
 
 @app.get("/api/hermes/filler")
@@ -2371,9 +2370,7 @@ def api_hermes_get_filler() -> dict[str, Any]:
     return {
         "enabled": hermes_cfg.get("filler_enabled", True),
         "phrases": hermes_cfg.get("filler_phrases", []),
-        "compress_context_every_n_turns": hermes_cfg.get(
-            "compress_context_every_n_turns", 20
-        ),
+        "compress_context_every_n_turns": hermes_cfg.get("compress_context_every_n_turns", 20),
     }
 
 
@@ -2387,6 +2384,7 @@ def api_hermes_models() -> dict[str, Any]:
     status panel shows whatever hermes actually reports.
     """
     import httpx
+
     settings = _read_settings() or {}
     cfg = HermesProcess.resolve_config(settings)
     if not state.hermes.is_running():
@@ -2482,9 +2480,7 @@ def api_hermes_chat(body: dict[str, Any]) -> Response:
                     if not (200 <= r.status_code < 300):
                         body_snippet = r.read().decode("utf-8", "replace")[:200]
                         yield (
-                            f"event: error\n"
-                            f"data: {{\"status\": {r.status_code}, "
-                            f"\"body\": {json.dumps(body_snippet)}}}\n\n"
+                            f'event: error\ndata: {{"status": {r.status_code}, "body": {json.dumps(body_snippet)}}}\n\n'
                         )
                         return
                     for line in r.iter_lines():
@@ -2504,10 +2500,7 @@ def api_hermes_chat(body: dict[str, Any]) -> Response:
                         # ``data:`` line). EventSource consumes this
                         # implicitly when our writes are well-formed.
         except Exception as e:  # noqa: BLE001
-            yield (
-                f"event: error\n"
-                f"data: {{\"error\": {json.dumps(f'{type(e).__name__}: {e}')}}}\n\n"
-            )
+            yield (f'event: error\ndata: {{"error": {json.dumps(f"{type(e).__name__}: {e}")}}}\n\n')
 
     # ``Response`` calls ``.render(content)`` which tries to ``.encode()`` the
     # content; passing a generator crashes with ``'generator' object has no
@@ -2594,9 +2587,7 @@ def api_llm_keepalive_restart(body: dict[str, Any] | None = None) -> dict[str, A
     """
     settings = (body or {}).get("settings")
     if not isinstance(settings, dict):
-        raise HTTPException(
-            status_code=400, detail="Body must include 'settings' object"
-        )
+        raise HTTPException(status_code=400, detail="Body must include 'settings' object")
     try:
         llm_keepaliver.update_from_settings(settings)
     except Exception as e:  # noqa: BLE001
@@ -2817,6 +2808,7 @@ def api_shutdown() -> dict[str, Any]:
         state.process.stop()
     except Exception:  # noqa: BLE001
         logger.exception("Error stopping pipeline during shutdown")
+
     # Schedule server exit on a background thread so the response gets sent
     # before uvicorn tears down.
     def _do_shutdown() -> None:
