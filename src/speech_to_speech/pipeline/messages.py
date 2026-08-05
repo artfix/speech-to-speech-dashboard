@@ -41,6 +41,7 @@ class VADAudio(PipelineMessage):
 
     tag: Literal["vad_audio"] = "vad_audio"
     audio: np.ndarray
+    runtime_config: RuntimeConfig | None = None
     mode: Literal["progressive", "final"] | None = None
     turn_id: str | None = None
     turn_revision: int | None = None
