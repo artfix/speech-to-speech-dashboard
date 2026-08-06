@@ -1140,13 +1140,11 @@ function applyDisabledStates() {
         }
     }
     updateQwen3RequiredHints();
-    // 0.4.3+: auto-unload hook for Ollama num_ctx changes. Fires every
-    // time any setting mutates, but only acts when (a) the URL looks
-    // like Ollama, (b) the current Ollama-resident model's context
-    // differs from the user's setting, (c) the value actually changed
-    // since last time we checked (debounced by comparing against the
-    // last value we processed).
-    _maybeAutoUnloadOnNumCtxChange();
+    // 0.4.3+: auto-unload hook for Ollama num_ctx changes is disabled
+    // (v0.5.6). The lifecycle poll is off, so the automatic unload+
+    // reload path is off too — avoids background network calls when
+    // Ollama is not in use.
+    // _maybeAutoUnloadOnNumCtxChange();
 }
 
 // 0.4.3+: auto-unload hook state. Tracks the last num_ctx we processed
@@ -1775,14 +1773,17 @@ function renderOllamaLifecycleField() {
             ` · ${ctxStr}${sizeStr}${untilStr}`;
     }
     // Helper exposed on window for the global visibility-check loop.
-    // Mirrors the pattern in the Hermes tab poll.
+    // v0.5.6: automatic polling is disabled to avoid wasting CPU/
+    // network on Ollama when the lifecycle section isn't needed. We do
+    // one manual refresh when the tab becomes active so the badge isn't
+    // stuck on "(loading…)"; the reload button still fetches on demand.
     function _start() {
         if (pollTimer) return;
         _ollamaLifecycleTick();
-        pollTimer = setInterval(_ollamaLifecycleTick, 2000);
+        pollTimer = true; // sentinel: no setInterval, just guard re-entry
     }
     function _stop() {
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        if (pollTimer) { pollTimer = null; }
     }
     // Start polling immediately if the LLM tab is currently active.
     const llmTab = document.getElementById('tab-llm');

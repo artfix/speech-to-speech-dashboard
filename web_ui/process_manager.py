@@ -220,7 +220,10 @@ class PipelineProcess:
             env = self._build_env(settings.get("env") or [])
             self._maybe_inject_openai_api_key(settings, env)
             self._maybe_install_openai_timeout_patch(settings, env)
-            self._maybe_install_hermes_filler_patch(settings, env)
+            # Hermes filler audio patch is disabled (v0.5.6). The implicit VAD
+            # path has a known dispatch-table reference bug; leaving it off
+            # avoids any runtime cost until we revisit it.
+            # self._maybe_install_hermes_filler_patch(settings, env)
             self._state.last_argv = argv
             self._state.last_env = env
             self._state.started_at = time.time()
@@ -265,7 +268,9 @@ class PipelineProcess:
             self._state.process = None
             self._state.started_at = None
             self._remove_openai_timeout_patch()
-            self._remove_hermes_filler_patch()
+            # Hermes filler patch loader is disabled (v0.5.6). Skip cleanup
+            # so we don't execute any patch-related code at stop time.
+            # self._remove_hermes_filler_patch()
             self._close_log_file()
 
     def restart(self, settings: dict[str, Any]) -> None:
