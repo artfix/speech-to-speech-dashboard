@@ -2740,10 +2740,30 @@ function renderHermesTab(tab) {
         type: 'checkbox', id: 'hermes-filler-enabled',
         onchange: () => hermesFillerSave({ enabled: fillerToggle.checked }),
     });
-    tab.appendChild(el('div', { class: 'field' }, [
+    const fillerDelayInput = el('input', {
+        type: 'number',
+        id: 'hermes-filler-delay',
+        class: 'field-input',
+        min: 0,
+        max: 30000,
+        step: 100,
+        value: (state.settings.hermes.filler_delay_ms ?? 1500),
+        style: { width: '90px', marginLeft: '16px' },
+        onchange: () => {
+            let v = parseInt(fillerDelayInput.value, 10);
+            if (Number.isNaN(v)) v = 1500;
+            v = Math.max(0, Math.min(30000, v));
+            fillerDelayInput.value = v;
+            hermesFillerSave({ delay_ms: v });
+        },
+    });
+    tab.appendChild(el('div', { class: 'field', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap' } }, [
         fillerToggle,
         el('label', { for: 'hermes-filler-enabled', style: { marginLeft: '8px' } },
             ' Enable filler phrases'),
+        fillerDelayInput,
+        el('label', { for: 'hermes-filler-delay', style: { marginLeft: '6px' } },
+            'Delay (ms)'),
     ]));
 
     const MAX_FILLER_PHRASES = 20;
@@ -2968,14 +2988,21 @@ async function _hermesRefreshStatus() {
             ? `Model: ${modelName || '(unknown)'}    Endpoint: http://${s.host}:${s.port}/v1`
             : 'Model: (start hermes to load)';
     }
-    // Refresh filler enabled toggle once on first paint. We do not
+    // Refresh filler enabled toggle + delay once on first paint. We do not
     // re-render the per-phrase boxes here because the 2 s poll would
     // overwrite whatever the user is currently typing.
     const fillerToggle = document.getElementById('hermes-filler-enabled');
+    const fillerDelayInput = document.getElementById('hermes-filler-delay');
     if (fillerToggle && fillerToggle.dataset.loaded !== '1') {
         try {
             const f = await getJSON('/api/hermes/filler');
             fillerToggle.checked = !!f.enabled;
+            if (fillerDelayInput) {
+                let v = parseInt(f.delay_ms, 10);
+                if (Number.isNaN(v)) v = 1500;
+                v = Math.max(0, Math.min(30000, v));
+                fillerDelayInput.value = v;
+            }
             fillerToggle.dataset.loaded = '1';
         } catch (e) { /* offline */ }
     }

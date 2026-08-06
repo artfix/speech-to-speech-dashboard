@@ -573,6 +573,11 @@ def get_defaults() -> dict[str, Any]:
             # -v (verbose) or -vv (debug). The dashboard also tails
             # ~/.hermes/logs/agent.log regardless of this setting.
             "log_level": "verbose",
+            # 0.5.5: milliseconds of Hermes silence after a user turn before
+            # the dashboard injects a filler phrase into the pipeline TTS
+            # queue. Only active when --llm-backend-type == 'hermes' and
+            # filler_enabled is true.
+            "filler_delay_ms": 1500,
             # 0 = no read timeout (wait forever for the LLM stream),
             # >0 = read timeout in seconds. Used by the openai SDK
             # monkey-patch installed by process_manager.py when the

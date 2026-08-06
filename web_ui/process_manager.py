@@ -220,6 +220,7 @@ class PipelineProcess:
             env = self._build_env(settings.get("env") or [])
             self._maybe_inject_openai_api_key(settings, env)
             self._maybe_install_openai_timeout_patch(settings, env)
+            self._maybe_install_hermes_filler_patch(settings, env)
             self._state.last_argv = argv
             self._state.last_env = env
             self._state.started_at = time.time()
@@ -264,6 +265,7 @@ class PipelineProcess:
             self._state.process = None
             self._state.started_at = None
             self._remove_openai_timeout_patch()
+            self._remove_hermes_filler_patch()
             self._close_log_file()
 
     def restart(self, settings: dict[str, Any]) -> None:
@@ -519,8 +521,10 @@ class PipelineProcess:
     # the resolution logic.
 
     _OPENAI_PATCH_FILENAME = "_dash_openai_timeout_patch.py"
-    _SITECUSTOMIZE_FILENAME = "sitecustomize.py"
     _SITECUSTOMIZE_PROBE_MARKER = "_dash_openai_timeout_patch"
+    _FILLER_PATCH_FILENAME = "_dash_hermes_filler_patch.py"
+    _FILLER_PROBE_MARKER = "_dash_hermes_filler_patch"
+    _SITECUSTOMIZE_FILENAME = "sitecustomize.py"
 
     @staticmethod
     def _resolve_llm_request_timeout_s(settings: dict[str, Any]) -> int:
@@ -629,6 +633,114 @@ class PipelineProcess:
                 "20 s default. The LLM request timeout knob will not take effect."
             )
 
+    # ------------------------------------------------------------------
+    # Hermes filler audio monkey-patch (0.5.5+)
+    # ------------------------------------------------------------------
+    # The pipeline's LLM stage has no concept of "the user is waiting,
+    # play a short phrase". The dashboard adds it at runtime via a small
+    # patch that watches the internal realtime queues and injects a TTSInput
+    # if the LLM (Hermes) is silent for longer than the configured delay.
+    # The patch is a no-op when DASHBOARD_HERMES_FILLER_ENABLED is not set
+    # to 1.
+
+    @classmethod
+    def _maybe_install_hermes_filler_patch(cls, settings: dict[str, Any], env: dict[str, str]) -> None:
+        """Install the hermes filler patch when Hermes + filler are active."""
+        hermes_cfg = settings.get("hermes") or {}
+        if not isinstance(hermes_cfg, dict):
+            hermes_cfg = {}
+        enabled = settings.get("--llm-backend-type") == "hermes" and bool(hermes_cfg.get("filler_enabled", False))
+        delay_ms = 1500
+        try:
+            delay_ms = int(hermes_cfg.get("filler_delay_ms", 1500))
+        except (TypeError, ValueError):
+            pass
+        delay_ms = max(0, delay_ms)
+        phrases = [
+            str(p).strip() for p in hermes_cfg.get("filler_phrases", []) if isinstance(p, str) and str(p).strip()
+        ]
+
+        env["DASHBOARD_HERMES_FILLER_ENABLED"] = "1" if enabled else "0"
+        env["DASHBOARD_HERMES_FILLER_DELAY_MS"] = str(delay_ms)
+        env["DASHBOARD_HERMES_FILLER_PHRASES"] = "|".join(phrases)
+
+        if not enabled:
+            return
+
+        sp = cls._site_packages_dir()
+        if sp is None:
+            logger.warning(
+                "Could not locate venv site-packages; Hermes filler patch will not "
+                "take effect (no filler audio during dead time)."
+            )
+            return
+
+        try:
+            repo_root = Path(__file__).resolve().parent.parent
+            patch_src = repo_root / "web_ui" / "_hermes_filler_patch.py"
+            patch_dst = sp / cls._FILLER_PATCH_FILENAME
+            sitecustomize_path = sp / cls._SITECUSTOMIZE_FILENAME
+
+            if not patch_src.exists():
+                logger.warning(
+                    "Hermes filler patch source missing at %s; filler disabled",
+                    patch_src,
+                )
+                return
+
+            patch_dst.write_text(patch_src.read_text(encoding="utf-8"), encoding="utf-8")
+
+            existing = sitecustomize_path.read_text(encoding="utf-8") if sitecustomize_path.exists() else ""
+            if cls._FILLER_PROBE_MARKER not in existing:
+                snippet = (
+                    "\n\n# Auto-installed by speech-to-speech-dashboard for the "
+                    "Hermes filler audio feature. Safe to delete; removed on pipeline stop.\n"
+                    "try:\n"
+                    "    import _dash_hermes_filler_patch  # noqa: F401\n"
+                    "except Exception:  # noqa: BLE001\n"
+                    "    pass\n"
+                )
+                sitecustomize_path.write_text(existing + snippet, encoding="utf-8")
+
+            logger.info(
+                "Installed hermes filler patch (delay_ms=%s phrases=%d) at %s",
+                delay_ms,
+                len(phrases),
+                sp,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to install hermes filler patch; no filler audio will be injected.")
+
+    @classmethod
+    def _remove_hermes_filler_patch(cls) -> None:
+        """Best-effort removal of the hermes filler patch + sitecustomize marker."""
+        sp = cls._site_packages_dir()
+        if sp is None:
+            return
+        try:
+            patch_path = sp / cls._FILLER_PATCH_FILENAME
+            if patch_path.exists():
+                patch_path.unlink()
+            sitecustomize_path = sp / cls._SITECUSTOMIZE_FILENAME
+            if sitecustomize_path.exists():
+                txt = sitecustomize_path.read_text(encoding="utf-8")
+                if cls._FILLER_PROBE_MARKER in txt:
+                    # Strip our appended block but leave any other
+                    # sitecustomize content the user (or another tool) put there.
+                    marker = "# Auto-installed by speech-to-speech-dashboard for the"
+                    idx = txt.find(marker)
+                    if idx != -1:
+                        cut = txt[:idx].rstrip() + "\n"
+                        if cut.strip():
+                            sitecustomize_path.write_text(cut, encoding="utf-8")
+                        else:
+                            sitecustomize_path.unlink()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to remove hermes filler patch from %s; harmless but worth a manual cleanup",
+                sp,
+            )
+
     @classmethod
     def _remove_openai_timeout_patch(cls) -> None:
         """Best-effort removal of the patch + its sitecustomize marker.
@@ -650,8 +762,7 @@ class PipelineProcess:
                 txt = sitecustomize_path.read_text(encoding="utf-8")
                 if cls._SITECUSTOMIZE_PROBE_MARKER in txt:
                     # Strip our appended block but leave any other
-                    # sitecustomize content the user (or another
-                    # tool) put there.
+                    # sitecustomize content the user (or another tool) put there.
                     marker = "# Auto-installed by speech-to-speech-dashboard"
                     idx = txt.find(marker)
                     if idx != -1:

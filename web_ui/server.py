@@ -2325,12 +2325,14 @@ def api_hermes_filler(body: dict[str, Any]) -> dict[str, Any]:
     Body shape:
         - ``enabled`` (bool, optional): turn filler audio on/off.
         - ``phrases`` (list[str], optional): one phrase per line. Up
-          to 10 phrases are kept; anything beyond that is dropped
+          to 20 phrases are kept; anything beyond that is dropped
           silently. Empty strings are filtered.
+        - ``delay_ms`` (int, optional): milliseconds of Hermes silence
+          after a user turn before injecting a filler phrase. Clamped
+          to [0, 30000].
 
     Persists into ``web_ui_settings.json["hermes"]``. The pipeline
-    consumer (filler audio scheduler, task #9) reads this on every
-    turn.
+    runtime patch reads it on every pipeline start.
     """
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
@@ -2346,6 +2348,17 @@ def api_hermes_filler(body: dict[str, Any]) -> dict[str, Any]:
         # box per phrase and limits additions to 20 total.
         phrases = [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
         hermes_cfg["filler_phrases"] = phrases[:20]
+    if "delay_ms" in body:
+        try:
+            delay_ms = int(body["delay_ms"])
+            # 0 disables filler injection; 30 s is the sane upper bound.
+            delay_ms = max(0, min(30000, delay_ms))
+            hermes_cfg["filler_delay_ms"] = delay_ms
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="delay_ms must be an integer between 0 and 30000",
+            ) from None
     if "compress_context_every_n_turns" in body:
         try:
             n = int(body["compress_context_every_n_turns"])
@@ -2365,6 +2378,7 @@ def api_hermes_filler(body: dict[str, Any]) -> dict[str, Any]:
         "filler": {
             "enabled": hermes_cfg.get("filler_enabled", True),
             "phrases": hermes_cfg.get("filler_phrases", []),
+            "delay_ms": hermes_cfg.get("filler_delay_ms", 1500),
             "compress_context_every_n_turns": hermes_cfg.get("compress_context_every_n_turns", 20),
         },
     }
@@ -2374,15 +2388,16 @@ def api_hermes_filler(body: dict[str, Any]) -> dict[str, Any]:
 def api_hermes_get_filler() -> dict[str, Any]:
     """Read the current filler audio configuration.
 
-    Used by the Hermes tab's filler section to render the textarea
-    + toggle on first load. Mirrors :func:`api_hermes_filler` so the
-    two endpoints can be polled independently.
+    Used by the Hermes tab's filler section to render the UI on first
+    load. Mirrors :func:`api_hermes_filler` so the two endpoints can be
+    polled independently.
     """
     current = _read_settings() or {}
     hermes_cfg = current.get("hermes") or {}
     return {
         "enabled": hermes_cfg.get("filler_enabled", True),
         "phrases": hermes_cfg.get("filler_phrases", []),
+        "delay_ms": hermes_cfg.get("filler_delay_ms", 1500),
         "compress_context_every_n_turns": hermes_cfg.get("compress_context_every_n_turns", 20),
     }
 
