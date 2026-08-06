@@ -166,6 +166,7 @@
       "give me a second"
     ],
     "host": "127.0.0.1",
+    "log_level": "verbose",
     "model_name": "qwen3.5:9b",
     "port": 8642,
     "read_timeout_s": 0

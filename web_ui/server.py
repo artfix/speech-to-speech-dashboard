@@ -2186,6 +2186,8 @@ def api_hermes_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
         - ``model_name`` (str): the model name hermes should advertise
           on ``/v1/models``. The user picks this inside hermes; the
           dashboard just shows whatever is configured.
+        - ``log_level`` (str): one of ``default``, ``verbose``, ``debug``.
+          Controls the ``-v`` / ``-vv`` flags passed to ``hermes gateway run``.
 
     Returns ``{"ok": True, "status": <status dict>}`` on success, or
     409 if hermes is already running.
@@ -2195,7 +2197,7 @@ def api_hermes_start(body: dict[str, Any] | None = None) -> dict[str, Any]:
     # persisted file so the UI can edit and Start without a Save click.
     overrides: dict[str, Any] = {}
     if isinstance(body, dict):
-        for k in ("port", "host", "model_name"):
+        for k in ("port", "host", "model_name", "log_level"):
             v = body.get(k)
             if v is not None:
                 overrides[k] = v
@@ -2340,10 +2342,10 @@ def api_hermes_filler(body: dict[str, Any]) -> dict[str, Any]:
         raw = body["phrases"]
         if not isinstance(raw, list):
             raise HTTPException(status_code=400, detail="phrases must be a list of strings")
-        # Cap at 10, strip whitespace, drop empties. The textarea in
-        # the UI is also capped at 10 lines so this is defense in depth.
+        # Cap at 20, strip whitespace, drop empties. The UI shows one
+        # box per phrase and limits additions to 20 total.
         phrases = [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
-        hermes_cfg["filler_phrases"] = phrases[:10]
+        hermes_cfg["filler_phrases"] = phrases[:20]
     if "compress_context_every_n_turns" in body:
         try:
             n = int(body["compress_context_every_n_turns"])

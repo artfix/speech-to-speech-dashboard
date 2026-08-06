@@ -2475,7 +2475,7 @@ function renderControlTab(tab) {
 // tab shows:
 //   - a status badge (running? port? model? ready?)
 //   - Start / Polite Stop buttons
-//   - Filler audio config (on/off + 10-line phrase box)
+//   - Filler audio config (on/off + up to 20 editable phrase boxes)
 //   - A text console that streams /api/hermes/chat SSE
 //   - Logs filtered to source === "hermes" from the shared /ws/logs
 //   - Cancel / Kill buttons in a "Emergency" section
@@ -2622,6 +2622,33 @@ function renderHermesTab(tab) {
         'The dashboard only shows what hermes reports.');
     tab.appendChild(modelHint);
 
+    // ---- Hermes stderr verbosity knob --------------------------------
+    const logLevelSelect = el('select', {
+        id: 'hermes-log-level', class: 'field-select',
+        style: { width: '160px' },
+        onchange: (e) => {
+            _setHermesVal('log_level', e.target.value);
+            _persistHermesConfig();
+        },
+    }, [
+        el('option', { value: 'default' }, 'default'),
+        el('option', { value: 'verbose' }, 'verbose (-v)'),
+        el('option', { value: 'debug' }, 'debug (-vv)'),
+    ]);
+    logLevelSelect.value = _hermesVal('log_level', 'verbose');
+    tab.appendChild(_hermesField(
+        'stderr verbosity',
+        logLevelSelect,
+        'How chatty hermes is on its stderr stream. Verbose sends INFO ' +
+        'logs to the dashboard log panel; debug sends DEBUG. The dashboard ' +
+        'always tails ~/.hermes/logs/agent.log regardless. Change requires ' +
+        'Stop + Start to take effect.'
+    ));
+    tab.appendChild(el('div', { class: 'text-dim', style: {
+        fontSize: '12px', marginTop: '-8px', marginBottom: '12px', maxWidth: '720px'
+    } },
+        'Restart hermes after changing this for it to take effect.'));
+
     // ---- LLM read timeout knob (Hermes-only) --------------------------
     // The pipeline hardcodes a 20 s read timeout for every chat /
     // response call. When a user asks hermes to read a long passage,
@@ -2707,23 +2734,113 @@ function renderHermesTab(tab) {
     tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px', maxWidth: '720px' } },
         'Plays a short phrase from this list while hermes is mid-tool-call ' +
         '(>1.5s without text), so the user knows the agent is still working. ' +
-        'Uses the pipeline\'s TTS — no extra config.'));
+        'Uses the pipeline\'s TTS — no extra config. One phrase is picked at random.'));
+
     const fillerToggle = el('input', {
         type: 'checkbox', id: 'hermes-filler-enabled',
         onchange: () => hermesFillerSave({ enabled: fillerToggle.checked }),
-    });
-    const fillerBox = el('textarea', {
-        id: 'hermes-filler-box', class: 'field-input',
-        rows: '6', placeholder: 'one phrase per line, up to 10',
-        style: { width: '100%', maxWidth: '720px', fontFamily: 'monospace' },
-        onblur: () => hermesFillerSave({ phrases: _fillerBoxLines() }),
     });
     tab.appendChild(el('div', { class: 'field' }, [
         fillerToggle,
         el('label', { for: 'hermes-filler-enabled', style: { marginLeft: '8px' } },
             ' Enable filler phrases'),
     ]));
-    tab.appendChild(fillerBox);
+
+    const MAX_FILLER_PHRASES = 20;
+    const fillerContainer = el('div', { id: 'hermes-filler-container', style: { maxWidth: '720px' } });
+    tab.appendChild(fillerContainer);
+
+    function _getFillerPhrases() {
+        const container = document.getElementById('hermes-filler-container');
+        if (!container) return [];
+        const out = [];
+        for (const input of container.querySelectorAll('.hermes-filler-input')) {
+            const t = (input.value || '').trim();
+            if (t) out.push(t);
+        }
+        return out.slice(0, MAX_FILLER_PHRASES);
+    }
+
+    function _saveFillerPhrases() {
+        const phrases = _getFillerPhrases();
+        hermesFillerSave({ phrases });
+        // Re-render so empty boxes collapse and we never have more than one
+        // trailing empty slot.
+        _renderFillerBoxes(phrases);
+    }
+
+    function _renderFillerBoxes(phrases) {
+        const container = document.getElementById('hermes-filler-container');
+        if (!container) return;
+        container.textContent = '';
+
+        // Always render each saved phrase plus exactly one empty slot for
+        // adding a new phrase, unless we're already at the cap.
+        const values = [...phrases];
+        if (values.length < MAX_FILLER_PHRASES) {
+            values.push('');
+        }
+
+        values.forEach((text, idx) => {
+            const isEmptySlot = !text && idx === phrases.length;
+            const row = el('div', { class: 'hermes-filler-row', style: {
+                display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px'
+            } });
+            const input = el('input', {
+                type: 'text',
+                class: 'field-input hermes-filler-input',
+                placeholder: isEmptySlot ? 'type a filler phrase...' : '',
+                style: { flex: '1' },
+                value: text,
+                onblur: () => _saveFillerPhrases(),
+                onkeydown: (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        _saveFillerPhrases();
+                    }
+                },
+            });
+            row.appendChild(input);
+
+            // Delete button only for non-empty saved phrases. The empty slot
+            // has no delete button; it exists purely for adding.
+            if (text) {
+                const del = el('button', {
+                    type: 'button',
+                    class: 'btn btn-danger',
+                    style: { padding: '2px 8px', fontSize: '12px' },
+                    onclick: () => {
+                        const next = phrases.filter((_, i) => i !== idx);
+                        hermesFillerSave({ phrases: next });
+                        _renderFillerBoxes(next);
+                    },
+                }, '✕');
+                row.appendChild(del);
+            }
+
+            container.appendChild(row);
+        });
+
+        // Only show the explicit "Add phrase" button when there's room and
+        // the last visible slot is already filled (so the user sees a clear
+        // affordance).
+        if (phrases.length < MAX_FILLER_PHRASES) {
+            const addBtn = el('button', {
+                type: 'button',
+                class: 'btn',
+                style: { marginTop: '6px' },
+                onclick: () => {
+                    const next = [...phrases, ''];
+                    _renderFillerBoxes(next);
+                    // Focus the new empty box.
+                    const inputs = container.querySelectorAll('.hermes-filler-input');
+                    const last = inputs[inputs.length - 1];
+                    if (last) last.focus();
+                },
+            }, '+ Add phrase');
+            container.appendChild(addBtn);
+        }
+    }
 
     // ---- Console (text chat with hermes) ----------------------------
     tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Console'));
@@ -2780,6 +2897,8 @@ function renderHermesTab(tab) {
     tab.appendChild(el('div', { class: 'btn-row' }, [btnCancel, btnKill, btnResetSession, btnOpen]));
 
     // ---- Initial paint + ongoing poll -------------------------------
+    // Render filler boxes from saved phrases on first paint.
+    _renderFillerBoxes(state.settings.hermes.filler_phrases || []);
     _hermesRefetchLogs();
     _hermesRefreshStatus();
     if (!_hermesPollTimer) _hermesPollTimer = setInterval(_hermesTick, 2000);
@@ -2849,15 +2968,15 @@ async function _hermesRefreshStatus() {
             ? `Model: ${modelName || '(unknown)'}    Endpoint: http://${s.host}:${s.port}/v1`
             : 'Model: (start hermes to load)';
     }
-    // Refresh filler config once on first paint (cheap, idempotent).
-    const fillerBox = document.getElementById('hermes-filler-box');
+    // Refresh filler enabled toggle once on first paint. We do not
+    // re-render the per-phrase boxes here because the 2 s poll would
+    // overwrite whatever the user is currently typing.
     const fillerToggle = document.getElementById('hermes-filler-enabled');
-    if (fillerBox && fillerBox.dataset.loaded !== '1') {
+    if (fillerToggle && fillerToggle.dataset.loaded !== '1') {
         try {
             const f = await getJSON('/api/hermes/filler');
-            fillerBox.value = (f.phrases || []).join('\n');
-            fillerBox.dataset.loaded = '1';
-            if (fillerToggle) fillerToggle.checked = !!f.enabled;
+            fillerToggle.checked = !!f.enabled;
+            fillerToggle.dataset.loaded = '1';
         } catch (e) { /* offline */ }
     }
 }
@@ -2958,12 +3077,6 @@ async function _fetchHermesModelInto(labelEl) {
     labelEl.textContent = modelName ? `Model: ${modelName}` : '(unknown)';
 }
 
-function _fillerBoxLines() {
-    const box = document.getElementById('hermes-filler-box');
-    if (!box) return [];
-    return box.value.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 10);
-}
-
 async function hermesFillerSave(patch) {
     try {
         await putJSON('/api/hermes/filler', patch);
@@ -2981,6 +3094,7 @@ async function hermesStart(btnStart, btnStop) {
             host: cfg.host || '127.0.0.1',
             port: Number.isFinite(parseInt(cfg.port, 10)) ? parseInt(cfg.port, 10) : 8642,
             model_name: cfg.model_name || '',
+            log_level: cfg.log_level || 'verbose',
         };
         const r = await postJSON('/api/hermes/start', body);
         toast(r.status && r.status.running

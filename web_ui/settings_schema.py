@@ -566,7 +566,13 @@ def get_defaults() -> dict[str, Any]:
                 "thinking...",
                 "give me a second",
             ],
+            # 0.5.4: increased cap from 10 to 20 now that the UI shows one
+            # input box per phrase instead of a multi-line textarea.
             "compress_context_every_n_turns": 20,
+            # 0.5.4: stderr verbosity passed to `hermes gateway run` as
+            # -v (verbose) or -vv (debug). The dashboard also tails
+            # ~/.hermes/logs/agent.log regardless of this setting.
+            "log_level": "verbose",
             # 0 = no read timeout (wait forever for the LLM stream),
             # >0 = read timeout in seconds. Used by the openai SDK
             # monkey-patch installed by process_manager.py when the
