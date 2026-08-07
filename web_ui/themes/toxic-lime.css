@@ -1,0 +1,21 @@
+/* Toxic Lime — acid lime, electric purple, and pitch black. */
+:root {
+    --bg: #0a0a0a;
+    --bg-elev: #111111;
+    --bg-elev-2: #181818;
+    --border: #2a2a2a;
+    --text: #eaffcc;
+    --text-dim: #8ca060;
+    --accent: #ccff00;
+    --accent-2: #a855f7;
+    --accent-3: #00ff9d;
+    --success: #39ff14;
+    --warning: #ffaa00;
+    --error: #ff3b3b;
+    --info: #00d2ff;
+    --debug: #6b7a5a;
+    --shadow: rgba(204, 255, 0, 0.18);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

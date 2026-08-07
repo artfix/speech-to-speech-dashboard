@@ -1,0 +1,21 @@
+/* Aurora — teal, violet, and mint shimmer on midnight blue-black. */
+:root {
+    --bg: #080b14;
+    --bg-elev: #101329;
+    --bg-elev-2: #171c3a;
+    --border: #2a315e;
+    --text: #eef2ff;
+    --text-dim: #8e9ec4;
+    --accent: #2dd4bf;
+    --accent-2: #c084fc;
+    --accent-3: #6ee7b7;
+    --success: #4ade80;
+    --warning: #facc15;
+    --error: #f472b6;
+    --info: #38bdf8;
+    --debug: #6b7a9c;
+    --shadow: rgba(45, 212, 191, 0.18);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

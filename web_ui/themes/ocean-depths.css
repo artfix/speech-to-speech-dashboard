@@ -1,0 +1,21 @@
+/* Ocean Depths — abyssal blue, aqua, and living coral on deep sea. */
+:root {
+    --bg: #041016;
+    --bg-elev: #0a1c26;
+    --bg-elev-2: #122a38;
+    --border: #1e455a;
+    --text: #e0f7fa;
+    --text-dim: #7fb3c3;
+    --accent: #00e5ff;
+    --accent-2: #ff7f50;
+    --accent-3: #00bfa5;
+    --success: #69f0ae;
+    --warning: #ffd54f;
+    --error: #ff5252;
+    --info: #40c4ff;
+    --debug: #5e8a9a;
+    --shadow: rgba(0, 229, 255, 0.18);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

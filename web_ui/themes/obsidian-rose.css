@@ -1,0 +1,21 @@
+/* Obsidian Rose — rose pink, warm cream, and soft gold on dark slate. */
+:root {
+    --bg: #18141a;
+    --bg-elev: #211c24;
+    --bg-elev-2: #2d262f;
+    --border: #473c49;
+    --text: #fff0f5;
+    --text-dim: #bdaab6;
+    --accent: #ff7eb3;
+    --accent-2: #ffd1dc;
+    --accent-3: #f5c542;
+    --success: #77dd77;
+    --warning: #ffcc5c;
+    --error: #ff6b6b;
+    --info: #82b1ff;
+    --debug: #7d6e78;
+    --shadow: rgba(255, 126, 179, 0.18);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

@@ -1,0 +1,21 @@
+/* Blood Moon — deep crimson, molten gold, and ash on absolute black. */
+:root {
+    --bg: #0c0606;
+    --bg-elev: #140b0b;
+    --bg-elev-2: #1f1212;
+    --border: #3d2222;
+    --text: #f7e6e6;
+    --text-dim: #b58888;
+    --accent: #ff2a2a;
+    --accent-2: #ffae00;
+    --accent-3: #ff6b6b;
+    --success: #5ee8a0;
+    --warning: #ffae00;
+    --error: #ff4444;
+    --info: #5aa4ff;
+    --debug: #7a5a5a;
+    --shadow: rgba(255, 42, 42, 0.18);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}

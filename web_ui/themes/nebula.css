@@ -1,0 +1,21 @@
+/* Nebula — purple, pink, and cyan nebulae on void black. */
+:root {
+    --bg: #08030a;
+    --bg-elev: #120820;
+    --bg-elev-2: #1d0f33;
+    --border: #351c5a;
+    --text: #f3e8ff;
+    --text-dim: #9e85c1;
+    --accent: #d946ef;
+    --accent-2: #22d3ee;
+    --accent-3: #f472b6;
+    --success: #a3e635;
+    --warning: #fbbf24;
+    --error: #fb7185;
+    --info: #67e8f9;
+    --debug: #7a5a99;
+    --shadow: rgba(217, 70, 239, 0.18);
+    --glow: 0 0 8px var(--shadow);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}
