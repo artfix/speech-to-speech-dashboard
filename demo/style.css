@@ -574,90 +574,6 @@ a:hover {
   min-height: 0;
 }
 
-/* ─── Version announcement banner ─────────────────────────────────────── */
-
-/* Slim callout above the orb. Sits inside .stage (flex column, gap 20px),
- * so it just needs to be a full-width card with a left accent stripe. */
-.version-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  width: min(720px, 100%);
-  padding: 12px 16px 12px 18px;
-  background: linear-gradient(
-    135deg,
-    rgba(139, 125, 255, 0.10),
-    rgba(34, 211, 238, 0.08)
-  );
-  border: 1px solid rgba(139, 125, 255, 0.28);
-  border-left: 3px solid var(--accent);
-  border-radius: 10px;
-  color: var(--text);
-  font-size: 13.5px;
-  line-height: 1.45;
-  text-align: left;
-  box-shadow: 0 4px 22px rgba(0, 0, 0, 0.18);
-}
-.version-banner-text {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 8px;
-  min-width: 0;
-}
-.version-banner-text strong {
-  color: var(--text);
-  font-weight: 600;
-}
-.version-banner-text a {
-  color: var(--accent-2);
-  text-decoration: none;
-}
-.version-banner-text a:hover {
-  text-decoration: underline;
-}
-.version-tag {
-  display: inline-block;
-  padding: 1px 8px;
-  background: var(--accent);
-  color: #0a0b10;
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  line-height: 1.5;
-  white-space: nowrap;
-}
-.version-banner-cta {
-  flex-shrink: 0;
-  padding: 6px 12px;
-  background: transparent;
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  color: var(--accent);
-  font-size: 12.5px;
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.version-banner-cta:hover {
-  background: var(--accent);
-  color: #0a0b10;
-  text-decoration: none;
-}
-@media (max-width: 560px) {
-  .version-banner {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .version-banner-cta {
-    align-self: flex-end;
-  }
-}
-
 /* ─── Central circle ──────────────────────────────────────────────────── */
 
 /* Wraps the orb and its two side controls so they stay aligned on one row. */
@@ -1839,6 +1755,52 @@ body.cam-on .footer {
 .bubble.user .bubble-role { color: var(--voice-user); }
 .bubble.assistant .bubble-role { color: var(--voice-assistant); }
 
+.bubble.user.voice .bubble-body {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 126px;
+  color: var(--text-dim);
+}
+.voice-turn-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 16px;
+  color: var(--voice-user);
+}
+.voice-turn-wave i {
+  display: block;
+  width: 2px;
+  height: 12px;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: center;
+  animation: user-turn-wave 0.85s ease-in-out infinite;
+}
+.voice-turn-wave i:nth-child(2),
+.voice-turn-wave i:nth-child(4) {
+  animation-delay: -0.22s;
+}
+.voice-turn-wave i:nth-child(3) {
+  animation-delay: -0.44s;
+}
+.voice-turn-wave i:nth-child(5) {
+  animation-delay: -0.11s;
+}
+.bubble.user.sending .voice-turn-wave i {
+  animation-duration: 1.15s;
+}
+.voice-turn-state {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+@keyframes user-turn-wave {
+  0%, 100% { transform: scaleY(0.28); opacity: 0.5; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
 /* ─── Conversation history panel ─────────────────────────────────────── */
 
 .chat-panel {
@@ -1970,6 +1932,29 @@ body.cam-on .footer {
 /* Bodies share one neutral surface; alignment + the mono role label do the
  * distinguishing, so the panel reads as one quiet column. */
 .hist-msg.user .hist-body.partial { opacity: 0.65; }
+
+.hist-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--voice-user) 22%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--voice-user) 6%, var(--bg-elev-2));
+}
+.hist-audio-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--voice-user) 68%, var(--text-faint));
+}
+.hist-audio audio {
+  display: block;
+  width: min(260px, 100%);
+  height: 34px;
+  color-scheme: light dark;
+}
 
 /* ─── Tool call history item ─────────────────────────────────────────── */
 
@@ -2636,6 +2621,9 @@ body.cam-on .footer {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .voice-turn-wave i {
+    animation: none;
+  }
   .cam-pip {
     transition: opacity 0.22s ease;
     transform: none;
