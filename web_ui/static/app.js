@@ -2455,6 +2455,15 @@ function renderControlTab(tab) {
 
     tab.appendChild(el('h3', { style: { marginTop: '32px' } }, 'Memory'));
     tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '12px', maxWidth: '720px' } }, 'The pipeline keeps the TTS model in RAM while running. Use this to drop the TTS model from memory without killing the pipeline; the model reloads on the next TTS request (~20s on CPU, ~5s on GPU).'));
+
+    const isQwen3 = (state.settings['--tts'] || '').toLowerCase() === 'qwen3';
+    if (isQwen3) {
+        tab.appendChild(el('div', {
+            class: 'warning-banner',
+            style: { marginBottom: '12px', maxWidth: '720px' }
+        }, '⚠️ Qwen3-TTS: stop the pipeline first, then click Unload TTS Model to free VRAM.'));
+    }
+
     const rowMem = el('div', { class: 'btn-row' }, [
         el('button', { class: 'btn btn-large', onclick: unloadTtsModel }, '🧹 Unload TTS Model'),
     ]);
@@ -3363,6 +3372,18 @@ async function stopPipeline() {
 async function unloadTtsModel() {
     try {
         const status = await getJSON('/api/process/status');
+        const isQwen3 = (state.settings['--tts'] || '').toLowerCase() === 'qwen3';
+
+        if (isQwen3) {
+            if (status && status.running) {
+                toast('Qwen3-TTS: stop the pipeline first, then click Unload TTS Model to free VRAM.', 'warning');
+                return;
+            }
+            await postJSON('/api/qwen3/unload_model', {});
+            toast('Qwen3-TTS model unloaded from dashboard memory. VRAM freed.', 'success');
+            return;
+        }
+
         if (!status || !status.running) {
             toast('Pipeline is not running — nothing to unload.', 'warning');
             return;

@@ -350,6 +350,17 @@ html, body {
     white-space: pre-wrap;
 }
 
+.warning-banner {
+    display: block;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    background: rgba(255, 170, 0, 0.12);
+    border: 1px solid rgba(255, 170, 0, 0.55);
+    color: #ffdca8;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
 /* Disabled-when: variant-conditional fields. Chatterbox TTS uses this to
    gray out parameters that don't apply to the currently-selected model
    variant. The class is toggled from app.js's applyDisabledStates(). */

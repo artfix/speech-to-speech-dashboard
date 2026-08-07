@@ -1304,6 +1304,78 @@ def api_qwen3_voice_test(body: dict[str, Any]) -> Response:
     return Response(content=wav_bytes, media_type="audio/wav")
 
 
+@app.post("/api/qwen3/unload_model")
+def api_qwen3_unload_model() -> dict[str, Any]:
+    """Free Qwen3-TTS model state from the dashboard process memory.
+
+    Qwen3-TTS loads native model state into the dashboard process itself
+    (e.g. when the user previews a voice). The pipeline's own TTS handler
+    does not support hot-unload, so stopping the pipeline subprocess does
+    not fully free VRAM. This endpoint drops the loaded module/model state,
+    runs ``gc.collect()``, and clears the CUDA cache when available.
+    """
+    import gc
+
+    freed_refs: list[str] = []
+
+    # 1. Drop any cached model references the dashboard module may hold.
+    try:
+        from web_ui import qwentts_voice_library  # noqa: PLC0415
+
+        for attr in ("_cached_qwentts_model", "_last_qwentts_model"):
+            if hasattr(qwentts_voice_library, attr):
+                setattr(qwentts_voice_library, attr, None)
+                freed_refs.append(attr)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2. Remove the native extension and its Python wrappers so the next
+    #    qwen3 preview reloads a fresh context instead of reusing cached
+    #    tensors.
+    modules_to_drop = [
+        name
+        for name in sys.modules
+        if name in ("qwentts_cpp", "faster_qwen3_tts")
+        or name.startswith("qwentts_cpp.")
+        or name.startswith("faster_qwen3_tts.")
+    ]
+    for name in modules_to_drop:
+        try:
+            del sys.modules[name]
+        except KeyError:
+            pass
+    freed_refs.extend(modules_to_drop)
+
+    # 3. Force garbage collection of the freed objects.
+    try:
+        gc.collect()
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 4. Release any CUDA memory retained by PyTorch in this process.
+    cuda_cache_emptied = False
+    try:
+        import torch  # type: ignore[import-not-found]  # noqa: PLC0415
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            cuda_cache_emptied = True
+    except Exception:  # noqa: BLE001
+        pass
+
+    logger.info(
+        "Qwen3-TTS unload_model: dropped %d module(s), freed_refs=%s, cuda_cache_emptied=%s",
+        len(modules_to_drop),
+        freed_refs,
+        cuda_cache_emptied,
+    )
+    return {
+        "ok": True,
+        "modules_dropped": len(modules_to_drop),
+        "cuda_cache_emptied": cuda_cache_emptied,
+    }
+
+
 @app.delete("/api/qwen3_ref_audio/{name}")
 def api_qwen3_delete_ref_audio(name: str) -> dict[str, Any]:
     """Remove an uploaded reference audio file from ``voices/qwen3_refs/``.
