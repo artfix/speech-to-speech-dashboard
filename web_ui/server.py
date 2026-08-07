@@ -67,7 +67,7 @@ from web_ui.qwentts_voice_library import (
     list_ref_audio_files,
     synthesize_qwen3_test,
 )
-from web_ui.settings_schema import get_defaults, get_full_schema
+from web_ui.settings_schema import get_defaults, get_full_schema, load_default_profile
 from web_ui.voice_library import (
     ChatterboxNotInstalled,
     delete_voice,
@@ -96,12 +96,15 @@ DEFAULT_PORT = 8050
 
 def _read_settings() -> Optional[dict[str, Any]]:
     if not SETTINGS_PATH.exists():
-        return None
+        # No user settings yet: seed from the built-in default profile.
+        return load_default_profile(REPO_ROOT)
     try:
         settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("Failed to read %s: %s", SETTINGS_PATH, e)
-        return None
+        # Corrupt/missing file: fall back to default profile rather than
+        # returning None and breaking downstream callers.
+        return load_default_profile(REPO_ROOT)
 
     # One-time migration: upstream v0.2.12 renamed the raw PCM mode from
     # "websocket" to "raw-websocket" and removed the compatibility alias.
@@ -307,8 +310,12 @@ def api_schema() -> dict[str, Any]:
 def api_get_settings() -> dict[str, Any]:
     saved = _read_settings()
     defaults = get_defaults()
-    if saved is None:
-        return {"saved": False, "settings": defaults, "path": str(SETTINGS_PATH)}
+    # ``saved`` is now never None: it returns the default profile when the user
+    # has no settings file. Use the file existence as the authoritative
+    # "has the user saved anything?" signal.
+    has_saved_file = SETTINGS_PATH.exists()
+    if not has_saved_file:
+        return {"saved": False, "settings": saved or defaults, "path": str(SETTINGS_PATH)}
     # Merge: saved wins, defaults fill in anything missing.
     merged = {**defaults, **saved}
     return {"saved": True, "settings": merged, "path": str(SETTINGS_PATH)}
@@ -368,7 +375,7 @@ def api_patch_settings(body: dict[str, Any]) -> dict[str, Any]:
 @app.post("/api/reset")
 def api_reset() -> dict[str, Any]:
     _delete_settings()
-    return {"ok": True, "settings": get_defaults()}
+    return {"ok": True, "settings": load_default_profile(REPO_ROOT)}
 
 
 # ---- Voice library + Chatterbox install --------------------------------

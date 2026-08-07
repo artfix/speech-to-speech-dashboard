@@ -607,6 +607,39 @@ const FIELD_WARNINGS = {
     ),
 };
 
+// Per-flag "Use" checkbox helpers. Core flags (mode/stt/llm-backend/tts)
+// are always forwarded and never get a checkbox. Boolean fields are
+// forwarded when true and skipped when false, so they don't get a separate
+// checkbox either. Everything else gets a small "Use" toggle next to the
+// help button: checked = the flag is included in the pipeline argv;
+// unchecked = the value is saved in the dashboard settings but is not
+// passed to the pipeline.
+const _CORE_FLAGS = new Set(['--mode', '--stt', '--llm-backend', '--tts']);
+
+function _enabledFlagsList() {
+    const arr = state.settings._enabled_flags;
+    return Array.isArray(arr) ? arr : [];
+}
+
+function isFlagEnabled(flag) {
+    if (_CORE_FLAGS.has(flag)) return true;
+    const val = state.settings[flag];
+    if (val === true) return true;
+    if (val === false) return false;
+    return _enabledFlagsList().includes(flag);
+}
+
+function setFlagEnabled(flag, enabled) {
+    let list = _enabledFlagsList();
+    if (enabled) {
+        if (!list.includes(flag)) list = [...list, flag];
+    } else {
+        list = list.filter((f) => f !== flag);
+    }
+    state.settings._enabled_flags = list;
+    renderAll();
+}
+
 function renderField(f, parentTitle) {
     const fieldId = `f-${f.flag}`;
     // ---- Hermes-backend: --model-name is read-only --------------------
@@ -659,6 +692,7 @@ function renderField(f, parentTitle) {
         // Kick off the fetch and update the label as soon as it lands.
         // Idempotent: safe to call multiple times during re-renders.
         _fetchHermesModelInto(hermesLabel);
+        hermesWrap.classList.toggle('flag-disabled', !isFlagEnabled(f.flag));
         return hermesWrap;
     }
 
@@ -692,6 +726,26 @@ function renderField(f, parentTitle) {
             }
         }, '?'),
     ]);
+
+    // Add a "Use" checkbox for non-core, non-bool fields so the user can
+    // explicitly choose which settings are forwarded to the pipeline argv.
+    if (!f.core && f.type !== 'bool') {
+        const useChecked = isFlagEnabled(f.flag);
+        const useWrap = el('span', { class: 'field-use-wrap' }, [
+            el('input', {
+                type: 'checkbox',
+                class: 'field-use-flag',
+                title: 'Pass this flag to the pipeline command',
+                checked: useChecked,
+                onclick: (e) => {
+                    e.stopPropagation();
+                    setFlagEnabled(f.flag, e.target.checked);
+                },
+            }),
+            el('span', { class: 'field-use-label' }, 'Use'),
+        ]);
+        label.appendChild(useWrap);
+    }
 
     let input;
     const val = state.settings[f.flag];
@@ -1077,6 +1131,7 @@ function renderField(f, parentTitle) {
     if (f.ui === 'textarea' || f.type === 'optional_string') {
         wrap.classList.add('full');
     }
+    wrap.classList.toggle('flag-disabled', !isFlagEnabled(f.flag));
     return wrap;
 }
 

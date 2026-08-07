@@ -260,6 +260,28 @@ html, body {
     color: var(--accent);
 }
 
+.field-use-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: none;
+    letter-spacing: 0;
+    cursor: pointer;
+    user-select: none;
+}
+
+.field-use-flag {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    margin: 0;
+}
+
 .field-input,
 .field-select,
 .field-textarea {
@@ -373,6 +395,24 @@ html, body {
 .field-disabled .field-checkbox {
     cursor: not-allowed;
     pointer-events: none;
+}
+
+/* Flag-disabled: a setting that exists in the dashboard but is NOT being
+   forwarded to the pipeline argv. The input stays editable (so the user can
+   keep a value around without passing it), but we dim it to signal that it
+   currently has no effect on the pipeline. */
+.flag-disabled {
+    opacity: 0.5;
+}
+.flag-disabled .field-label {
+    color: var(--text-dim);
+}
+.flag-disabled .field-input,
+.flag-disabled .field-select,
+.flag-disabled .field-textarea,
+.flag-disabled .field-checkbox {
+    border-color: var(--border);
+    background: var(--bg-elev);
 }
 
 /* GPU compatibility badge: shown above the voice library in the TTS tab

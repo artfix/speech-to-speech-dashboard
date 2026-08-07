@@ -28,7 +28,12 @@ and survives future additions cleanly.
 from __future__ import annotations
 
 import dataclasses
+import json
+import logging
+from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
+
+logger = logging.getLogger(__name__)
 
 # Argument dataclasses from the pipeline. We import them by name so a missing
 # optional extra (e.g. faster-whisper not installed) only fails if the user
@@ -91,6 +96,12 @@ def field_to_flag(name: str) -> str:
     uses internally.
     """
     return "--" + name.replace("_", "-")
+
+
+# Core flags are always forwarded to the pipeline and never get a per-field
+# "Use" checkbox in the UI. They are the minimal set the pipeline needs to
+# know which mode/backends to run.
+_CORE_FLAGS: set[str] = {"--mode", "--stt", "--llm-backend", "--tts"}
 
 
 def flag_to_field(flag: str) -> str:
@@ -186,10 +197,11 @@ def _schema_for_class(
     out: list[dict[str, Any]] = []
     for f in dataclasses.fields(cls):
         tp = _detect_type(f.type)
+        flag = field_to_flag(f.name)
         out.append(
             {
                 "name": f.name,
-                "flag": field_to_flag(f.name),
+                "flag": flag,
                 "type": tp,
                 "default": _field_default(f.name, getattr(instance, f.name)),
                 "help": (f.metadata.get("help") or "").strip(),
@@ -197,6 +209,7 @@ def _schema_for_class(
                 "ui": "textarea" if f.name in _TEXTAREA_FIELDS else _ui_for_type(tp),
                 "group": group,
                 "title": title,
+                "core": flag in _CORE_FLAGS,
             }
         )
     if visible_when is not None:
@@ -521,6 +534,27 @@ def _backend_meta() -> dict[str, Any]:
     }
 
 
+def load_default_profile(repo_root: Path | str | None = None) -> dict[str, Any]:
+    """Load the built-in default profile used when no settings file exists.
+
+    The file ``web_ui/default_profile.json`` contains a complete settings
+    dict plus an ``_enabled_flags`` list. If the file is missing, fall back
+    to ``get_defaults()`` (every flag enabled) so the dashboard still
+    starts.
+    """
+    root = Path(repo_root) if repo_root else Path(__file__).resolve().parent.parent
+    path = root / "web_ui" / "default_profile.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("Could not load default profile %s: %s", path, e)
+        defaults = get_defaults()
+        defaults["_enabled_flags"] = sorted(
+            k for k in defaults.keys() if k.startswith("--")
+        )
+        return defaults
+
+
 def get_defaults() -> dict[str, Any]:
     """Flat ``{flag: default_value}`` map covering every dashboard field.
 
@@ -784,6 +818,11 @@ def build_argv(settings: dict[str, Any]) -> list[str]:
     the pipeline flag directly. Keeps the user-facing knob as one number
     (the keepalive ping AND the pipeline warmup both honour it), and spares
     the user from thinking about two separate timeouts.
+
+    0.5.7+: only flags listed in ``_enabled_flags`` are forwarded. Core
+    backend selectors are always forwarded regardless of that list. If
+    ``_enabled_flags`` is missing (old settings file), every flag is treated
+    as enabled so existing users are not broken.
     """
     # Mirror the dashboard-only Ollama timeout to the pipeline's warmup
     # timeout. We only inject the value when the pipeline field isn't already
@@ -799,6 +838,17 @@ def build_argv(settings: dict[str, Any]) -> list[str]:
         except (TypeError, ValueError):
             t = 60
         settings["--responses-api-warmup-timeout-s"] = max(5, min(600, t))
+
+    # Per-flag enable list. Missing = backward-compat "all enabled".
+    raw_enabled = settings.get("_enabled_flags")
+    if raw_enabled is None:
+        enabled_flags: set[str] = set(settings.keys())
+    else:
+        enabled_flags = set(raw_enabled) | _CORE_FLAGS
+    # The mirrored timeout flag must be forwarded if we just invented it.
+    if "--responses-api-warmup-timeout-s" in settings:
+        enabled_flags.add("--responses-api-warmup-timeout-s")
+
     argv: list[str] = ["-m", "speech_to_speech.s2s_pipeline"]
     drop = _backend_args_to_drop(settings)
     for flag, value in settings.items():
@@ -808,6 +858,9 @@ def build_argv(settings: dict[str, Any]) -> list[str]:
             # Belongs to a backend the user is NOT using. Forwarding these
             # would crash HfArgumentParser with "Some specified arguments
             # are not used".
+            continue
+        if flag not in enabled_flags:
+            # User unchecked this flag; skip it even if a value is saved.
             continue
         if not flag.startswith("--"):
             continue
