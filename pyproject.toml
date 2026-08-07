@@ -165,6 +165,7 @@ web_ui = [
     "themes/*.css",
     "Guide.md",
     "README.md",
+    "default_profile.json",
 ]
 
 [tool.ruff]
