@@ -987,6 +987,84 @@ html, body {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.35; }
 }
+
+/* ---- Hermes console: rich live-activity view ---- */
+
+.hermes-turn {
+    border-top: 1px solid var(--border);
+    padding-top: 6px;
+    margin-top: 6px;
+}
+.hermes-turn:first-child {
+    border-top: none;
+    margin-top: 0;
+    padding-top: 0;
+}
+.hermes-meta {
+    color: var(--text-dim);
+    opacity: 0.8;
+    padding: 1px 0;
+}
+.hermes-thinking {
+    color: var(--text-dim);
+    font-style: italic;
+    opacity: 0.75;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 1px 0 1px 10px;
+    border-left: 2px solid var(--border);
+    margin: 2px 0;
+}
+.hermes-tool-row {
+    color: var(--text);
+    padding: 1px 0 1px 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.hermes-tool-preview {
+    color: var(--text-dim);
+}
+.hermes-tool-status {
+    font-weight: 700;
+}
+.hermes-tool-args,
+.hermes-transcript {
+    margin: 2px 0 4px 14px;
+}
+.hermes-tool-args summary,
+.hermes-transcript summary {
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 11px;
+}
+.hermes-tool-args pre {
+    margin: 4px 0;
+    padding: 6px 8px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-width: 680px;
+    max-height: 240px;
+    overflow: auto;
+}
+.hermes-usage {
+    color: var(--text-dim);
+    font-size: 11px;
+    padding: 2px 0;
+}
+.hermes-transcript-msg {
+    padding: 2px 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+}
+.hermes-transcript-role {
+    color: var(--accent, #6cf);
+    font-weight: 600;
+}
 .btn-warning {
     background: #f59e0b;
     color: #1a1a1a;

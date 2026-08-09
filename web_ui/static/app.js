@@ -46,6 +46,11 @@ const state = {
     // In-flight Ollama fetch, so the debounce doesn't fire N requests
     // in a row while the user is still typing.
     ollamaFetchInFlight: null,
+    // Hermes console turns — live DOM nodes (one per text turn) so the
+    // console survives tab switches. Capped; oldest dropped. The
+    // streaming handler keeps a reference to the in-flight node, so an
+    // active turn keeps updating even after a tab rebuild.
+    hermesTurns: [],
 };
 
 // ---- Utility ---------------------------------------------------------
@@ -2560,6 +2565,28 @@ async function loadExampleSettings() {
 
 let _hermesChatAbort = null;  // AbortController for the in-flight SSE
 
+// Cap the persisted Hermes console turns (DOM nodes). Older turns are
+// dropped — the console is a live debug view, not an infinite log.
+const _HERMES_TURNS_MAX = 20;
+
+function _hermesPushTurn(turnNode) {
+    state.hermesTurns.push(turnNode);
+    if (state.hermesTurns.length > _HERMES_TURNS_MAX) {
+        const old = state.hermesTurns.shift();
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+    }
+}
+
+// Filler-audio UI is disabled in the dashboard. The feature needs the
+// frontend conversation app to inject filler phrases mid-tool-call, which
+// isn't wired up yet, and the server-side patch loader is disabled too
+// (web_ui/_hermes_filler_patch.py). The whole Filler-audio section in the
+// Hermes tab is gated on this flag so it isn't rendered and its /api/hermes/
+// filler poll doesn't fire. Saved filler settings in web_ui_settings.json
+// are left untouched. Flip to true to bring the section back once the
+// injection path exists.
+const HERMES_FILLER_UI_ENABLED = false;
+
 function renderHermesTab(tab) {
     tab.textContent = '';
     tab.appendChild(el('div', { class: 'tab-header' }, [
@@ -2800,6 +2827,7 @@ function renderHermesTab(tab) {
     ]));
 
     // ---- Filler audio config ----------------------------------------
+    if (HERMES_FILLER_UI_ENABLED) {
     tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Filler audio'));
     tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px', maxWidth: '720px' } },
         'Plays a short phrase from this list while hermes is mid-tool-call ' +
@@ -2932,14 +2960,23 @@ function renderHermesTab(tab) {
         }
     }
 
+    // Populate the phrase boxes from saved settings on first paint.
+    _renderFillerBoxes(state.settings.hermes.filler_phrases || []);
+    }  // end if (HERMES_FILLER_UI_ENABLED)
+
     // ---- Console (text chat with hermes) ----------------------------
     tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Console'));
     tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px' } },
-        'Text chat with hermes — useful for debugging skills without ' +
-        'talking to the robot. Streams over Server-Sent Events.'));
+        'Text chat with hermes on the SAME session as the voice pipeline — ' +
+        'hermes remembers what was said by voice, and you can paste URLs or ' +
+        'long text here that STT would mangle. Shows live activity: reasoning, ' +
+        'tool calls, and the turn transcript (for debugging).'));
     const consoleBox = el('div', { id: 'hermes-console', class: 'log-console',
-        style: { height: '260px', maxWidth: '720px' } });
+        style: { height: '360px', maxWidth: '720px' } });
     tab.appendChild(consoleBox);
+    // Replay persisted turn nodes (survive tab switches). In-flight turns
+    // keep updating — the handler holds the live node reference.
+    for (const t of state.hermesTurns) consoleBox.appendChild(t);
     const chatInput = el('input', {
         type: 'text', class: 'field-input', id: 'hermes-chat-input',
         placeholder: 'Type a message for hermes…', style: { width: '60%', maxWidth: '500px' },
@@ -2987,8 +3024,6 @@ function renderHermesTab(tab) {
     tab.appendChild(el('div', { class: 'btn-row' }, [btnCancel, btnKill, btnResetSession, btnOpen]));
 
     // ---- Initial paint + ongoing poll -------------------------------
-    // Render filler boxes from saved phrases on first paint.
-    _renderFillerBoxes(state.settings.hermes.filler_phrases || []);
     _hermesRefetchLogs();
     _hermesRefreshStatus();
     if (!_hermesPollTimer) _hermesPollTimer = setInterval(_hermesTick, 2000);
@@ -3259,30 +3294,184 @@ async function hermesSendChat() {
         toast('A chat reply is already streaming — press Stop first.', 'info', 3000);
         return;
     }
-    // Append the user message to the console for context.
-    const userRow = el('div', { class: 'log-row', style: { color: 'var(--accent, #6cf)' } },
-        `you: ${msg}`);
-    consoleBox.appendChild(userRow);
-    // Placeholder for the assistant reply — we update .textContent as
-    // each token arrives.
-    const assistantRow = el('div', { class: 'log-row', style: { color: 'var(--text, #eee)' } },
-        'hermes: ');
-    consoleBox.appendChild(assistantRow);
-    consoleBox.scrollTop = consoleBox.scrollHeight;
     input.value = '';
+
+    // One turn = one container node (persisted in state.hermesTurns so it
+    // survives tab switches). Holds the user row + streamed activity.
+    const turn = el('div', { class: 'hermes-turn' });
+    turn.appendChild(el('div', { class: 'log-row', style: { color: 'var(--accent, #6cf)' } },
+        `you: ${msg}`));
+    consoleBox.appendChild(turn);
+    _hermesPushTurn(turn);
+
+    // Per-turn mutable render state.
+    let assistantRow = null;   // the "hermes: …" text row
+    let thinkingRow = null;    // accumulated reasoning row
+    const toolRows = [];       // [{name, status, done}]
+    const scroll = () => { if (isLogConsoleAtBottom(consoleBox)) consoleBox.scrollTop = consoleBox.scrollHeight; };
+    const appendRow = (node) => { turn.appendChild(node); scroll(); };
+    const ensureAssistant = () => {
+        if (!assistantRow) {
+            assistantRow = el('div', { class: 'log-row', style: { color: 'var(--text, #eee)' } }, 'hermes: ');
+            appendRow(assistantRow);
+        }
+        return assistantRow;
+    };
+
+    // Parse one SSE block (optional `event:` line + `data:` payload) and
+    // render it into the turn. Handles Endpoint A's named events AND the
+    // chat-completions fallback shape (plain `data:` chunks, no event line).
+    const handleBlock = (block) => {
+        const lines = block.split('\n');
+        let eventName = '';
+        let dataStr = '';
+        for (const ln of lines) {
+            if (ln.startsWith('event:')) eventName = ln.slice(6).trim();
+            else if (ln.startsWith('data:')) dataStr += ln.slice(5).replace(/^\s/, '');
+        }
+        if (!dataStr || dataStr === '[DONE]') return;
+        let obj;
+        try { obj = JSON.parse(dataStr); } catch { return; }
+
+        switch (eventName) {
+            case 'run.started':
+                appendRow(el('div', { class: 'hermes-meta' }, '🤖 turn started'));
+                break;
+            case 'message.started':
+                ensureAssistant();
+                break;
+            case 'assistant.delta': {
+                const a = ensureAssistant();
+                if (obj.delta) { a.textContent += obj.delta; scroll(); }
+                break;
+            }
+            case 'tool.progress': {
+                // Reasoning/thinking arrives as tool.progress with tool_name "_thinking".
+                if ((obj.tool_name || '') === '_thinking') {
+                    if (!thinkingRow) {
+                        thinkingRow = el('div', { class: 'hermes-thinking' }, '💭 ');
+                        appendRow(thinkingRow);
+                    }
+                    thinkingRow.textContent += obj.delta || '';
+                    scroll();
+                }
+                break;
+            }
+            case 'tool.started':
+            case 'tool.completed':
+            case 'tool.failed': {
+                const tn = obj.tool_name || 'tool';
+                const preview = obj.preview || '';
+                const mark = eventName === 'tool.started' ? '…' : (eventName === 'tool.failed' ? '✗' : '✓');
+                // Match the most recent still-running tool row with the same name.
+                let entry = null;
+                for (let i = toolRows.length - 1; i >= 0; i--) {
+                    if (toolRows[i].name === tn && !toolRows[i].done) { entry = toolRows[i]; break; }
+                }
+                if (eventName === 'tool.started') {
+                    const status = el('span', { class: 'hermes-tool-status' }, mark);
+                    const row = el('div', { class: 'hermes-tool-row' }, [
+                        `🔧 ${tn}`,
+                        preview ? ` — ${preview}` : null,
+                        ' ',
+                        status,
+                    ]);
+                    if (obj.args != null) {
+                        row.appendChild(el('details', { class: 'hermes-tool-args' }, [
+                            el('summary', {}, 'args'),
+                            el('pre', {}, typeof obj.args === 'string' ? obj.args : JSON.stringify(obj.args, null, 2)),
+                        ]));
+                    }
+                    appendRow(row);
+                    toolRows.push({ name: tn, status, done: false });
+                } else if (entry) {
+                    entry.done = true;
+                    entry.status.textContent = mark;
+                } else {
+                    appendRow(el('div', { class: 'hermes-tool-row' }, `${mark} ${tn}${preview ? ' — ' + preview : ''}`));
+                }
+                break;
+            }
+            case 'assistant.completed':
+                if (obj.content) ensureAssistant().textContent = 'hermes: ' + obj.content;
+                scroll();
+                break;
+            case 'run.completed': {
+                const u = obj.usage || {};
+                const inT = u.prompt_tokens ?? u.input_tokens ?? u.input ?? '?';
+                const outT = u.completion_tokens ?? u.output_tokens ?? u.output ?? '?';
+                const cost = (u.cost_usd != null) ? ` · $${u.cost_usd}`
+                    : (u.total_cost != null) ? ` · $${u.total_cost}` : '';
+                appendRow(el('div', { class: 'hermes-usage' }, `📊 tokens: ${inT} in / ${outT} out${cost}`));
+                const msgs = obj.messages || [];
+                if (msgs.length) {
+                    const det = el('details', { class: 'hermes-transcript' }, [
+                        el('summary', {}, `📋 transcript (${msgs.length})`),
+                    ]);
+                    for (const m of msgs) {
+                        const role = m.role || m.type || '?';
+                        let content = m.content;
+                        if (content == null) content = JSON.stringify(m);
+                        else if (typeof content !== 'string') content = JSON.stringify(content, null, 2);
+                        det.appendChild(el('div', { class: 'hermes-transcript-msg' }, [
+                            el('span', { class: 'hermes-transcript-role' }, `${role}: `),
+                            String(content),
+                        ]));
+                    }
+                    appendRow(det);
+                }
+                break;
+            }
+            case 'hermes.tool.progress': {
+                // chat-completions fallback custom frame.
+                const tn = obj.tool || obj.tool_name || 'tool';
+                const label = obj.label || obj.preview || '';
+                if (obj.status === 'running') {
+                    const status = el('span', { class: 'hermes-tool-status' }, '…');
+                    appendRow(el('div', { class: 'hermes-tool-row' }, [
+                        `🔧 ${tn}`, label ? ` — ${label}` : null, ' ', status,
+                    ]));
+                    toolRows.push({ name: tn, status, done: false });
+                } else {
+                    let entry = null;
+                    for (let i = toolRows.length - 1; i >= 0; i--) {
+                        if (toolRows[i].name === tn && !toolRows[i].done) { entry = toolRows[i]; break; }
+                    }
+                    if (entry) { entry.done = true; entry.status.textContent = '✓'; }
+                }
+                break;
+            }
+            case 'error':
+                appendRow(el('div', { class: 'log-row', style: { color: 'var(--danger, #d33)' } },
+                    `error: ${obj.message || obj.error || JSON.stringify(obj)}`));
+                break;
+            case 'note':
+                appendRow(el('div', { class: 'hermes-meta' }, `ℹ️ ${obj.msg || ''}`));
+                break;
+            case 'done':
+                break;
+            default:
+                // No `event:` line → chat-completions fallback text chunk.
+                if (!eventName) {
+                    const delta = obj.delta && obj.delta.content
+                        || (obj.choices && obj.choices[0] && obj.choices[0].delta && obj.choices[0].delta.content);
+                    if (delta) { ensureAssistant().textContent += delta; scroll(); }
+                }
+                break;
+        }
+    };
 
     _hermesChatAbort = new AbortController();
     try {
         const r = await fetch('/api/hermes/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                message: msg,
-            }),
+            body: JSON.stringify({ message: msg }),
             signal: _hermesChatAbort.signal,
         });
         if (!r.ok || !r.body) {
-            assistantRow.textContent = `hermes: (error ${r.status}: ${await r.text().catch(() => '')})`;
+            appendRow(el('div', { class: 'log-row', style: { color: 'var(--danger, #d33)' } },
+                `error ${r.status}: ${await r.text().catch(() => '')}`));
             return;
         }
         const reader = r.body.getReader();
@@ -3292,36 +3481,20 @@ async function hermesSendChat() {
             const { value, done } = await reader.read();
             if (done) break;
             buf += dec.decode(value, { stream: true });
-            // SSE: events separated by blank lines, each line starting
-            // with "data: ". We only care about the data payload here.
+            // SSE events are separated by a blank line.
             let nl;
             while ((nl = buf.indexOf('\n\n')) !== -1) {
-                const ev = buf.slice(0, nl);
+                const block = buf.slice(0, nl);
                 buf = buf.slice(nl + 2);
-                const m = ev.match(/^data:\s*(.+)$/m);
-                if (!m) continue;
-                const payload = m[1].trim();
-                if (!payload || payload === '[DONE]') continue;
-                try {
-                    const obj = JSON.parse(payload);
-                    const delta = obj && obj.delta
-                        || (obj && obj.choices && obj.choices[0] && obj.choices[0].delta && obj.choices[0].delta.content);
-                    if (delta) {
-                        assistantRow.textContent += delta;
-                        consoleBox.scrollTop = consoleBox.scrollHeight;
-                    }
-                } catch { /* skip non-JSON frames */ }
+                handleBlock(block);
             }
         }
-        // End-of-stream marker.
-        assistantRow.textContent += '\n';
-        consoleBox.scrollTop = consoleBox.scrollHeight;
+        if (assistantRow) assistantRow.textContent += '\n';
+        scroll();
     } catch (e) {
-        if (e.name === 'AbortError') {
-            assistantRow.textContent += ' [aborted]';
-        } else {
-            assistantRow.textContent += ` [error: ${e.message}]`;
-        }
+        const kind = e.name === 'AbortError' ? 'aborted' : `error: ${e.message}`;
+        if (assistantRow) assistantRow.textContent += ` [${kind}]`;
+        else appendRow(el('div', { class: 'log-row', style: { color: 'var(--danger, #d33)' } }, `[${kind}]`));
     } finally {
         _hermesChatAbort = null;
     }

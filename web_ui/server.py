@@ -2534,11 +2534,18 @@ def api_hermes_chat(body: dict[str, Any]) -> Response:
           request body. Defaults to whatever the user has configured
           in ``web_ui_settings.json["hermes"]["model_name"]``.
 
-    Returns a Server-Sent Events stream: each line is the literal
-    hermes SSE chunk (``data: {...}\\n\\n``), with the dashboard
-    adding ``event: chunk`` headers so the browser's ``EventSource``
-    can route them. The console panel renders each ``choices[0].delta.content``
-    in order to produce the streaming text effect.
+    Returns a Server-Sent Events stream. Primary path: hermes's rich
+    per-session endpoint ``/api/sessions/{id}/chat/stream`` (named SSE
+    events — ``run.started``, ``assistant.delta``, ``tool.progress``
+    with ``tool_name="_thinking"`` for reasoning, ``tool.started``/
+    ``tool.completed``, ``run.completed`` with the full turn transcript).
+    That endpoint shares the **same session id as the voice pipeline**
+    (the proxy's uuid4), so hermes remembers voice turns when you type
+    here, and vice-versa. If that session does not exist yet (no voice
+    turn has created it), the endpoint 404s and we fall back to
+    ``/v1/chat/completions`` with the ``X-Hermes-Session-Id`` header,
+    which auto-creates the session (less rich: text + tool progress
+    only); the next turn uses the rich path.
 
     The pipeline never uses this endpoint — it's the Hermes tab's
     text-only console, separate from the voice path.
@@ -2552,31 +2559,69 @@ def api_hermes_chat(body: dict[str, Any]) -> Response:
     cfg = HermesProcess.resolve_config(settings)
     if not state.hermes.is_running():
         raise HTTPException(status_code=409, detail="Hermes is not running")
-    session_id = body.get("session_id") or cfg.get("api_key", "") + "-console"
+    # One shared session: the same uuid4 the voice pipeline uses (injected
+    # by the proxy). So text typed here continues the robot's conversation —
+    # hermes remembers voice turns and vice-versa. (Previously this used
+    # ``<api_key>-console``, a separate conversation.)
+    session_id = body.get("session_id") or _get_or_create_proxy_session_id()
     if not isinstance(session_id, str) or not session_id:
         session_id = "dashboard-console"
     model = body.get("model") or cfg.get("model_name") or "hermes-agent"
 
     import httpx
 
-    url = f"http://{cfg['host']}:{cfg['port']}/v1/chat/completions"
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": message}],
-        "stream": True,
-    }
+    rich_url = f"http://{cfg['host']}:{cfg['port']}/api/sessions/{session_id}/chat/stream"
+    cc_url = f"http://{cfg['host']}:{cfg['port']}/v1/chat/completions"
+
+    def _forward_lines(r):
+        for line in r.iter_lines():
+            if not line:
+                # Blank line — SSE event boundary.
+                yield "\n"
+                continue
+            yield line + "\n"
 
     def _event_stream():
-        # Stream hermes's SSE chunks verbatim. If hermes returns a
-        # non-2xx (e.g. session expired), we surface the first 200
-        # chars of the body as an SSE error event so the UI can show
-        # a useful message instead of just hanging.
+        # Primary: the rich per-session chat stream (shares the voice
+        # session, emits reasoning + tool calls + a turn transcript).
+        # Fallback on 404 (session not created yet): chat-completions
+        # with X-Hermes-Session-Id auto-creates it (text + tool
+        # progress only); the next turn uses the rich path.
         try:
             with httpx.Client(timeout=None) as client:
                 with client.stream(
                     "POST",
-                    url,
-                    json=payload,
+                    rich_url,
+                    json={"message": message, "model": model},
+                    headers={
+                        "Authorization": f"Bearer {cfg['api_key']}",
+                        "Content-Type": "application/json",
+                        "Accept": "text/event-stream",
+                    },
+                ) as r:
+                    if r.status_code == 404:
+                        r.read()  # drain the 404 body, fall through to fallback
+                    elif not (200 <= r.status_code < 300):
+                        body_snippet = r.read().decode("utf-8", "replace")[:200]
+                        yield (
+                            f'event: error\ndata: {{"status": {r.status_code}, "body": {json.dumps(body_snippet)}}}\n\n'
+                        )
+                        return
+                    else:
+                        yield from _forward_lines(r)
+                        return
+                # Fallback: chat-completions auto-creates the session.
+                yield (
+                    f'event: note\ndata: {json.dumps({"msg": "session initializing — limited view this turn"})}\n\n'
+                )
+                with client.stream(
+                    "POST",
+                    cc_url,
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": message}],
+                        "stream": True,
+                    },
                     headers={
                         "Authorization": f"Bearer {cfg['api_key']}",
                         "Content-Type": "application/json",
@@ -2590,22 +2635,7 @@ def api_hermes_chat(body: dict[str, Any]) -> Response:
                             f'event: error\ndata: {{"status": {r.status_code}, "body": {json.dumps(body_snippet)}}}\n\n'
                         )
                         return
-                    for line in r.iter_lines():
-                        if not line:
-                            # Blank line — SSE event boundary. We
-                            # forward as-is so the browser's
-                            # EventSource picks it up.
-                            yield "\n"
-                            continue
-                        # hermes SSE lines look like:
-                        #   data: {"id": "...", "choices": [...]}
-                        #   data: [DONE]
-                        # Forward verbatim. The UI parses ``data:``
-                        # lines to extract ``choices[0].delta.content``.
-                        yield line + "\n"
-                        # SSE event boundary (one blank line after the
-                        # ``data:`` line). EventSource consumes this
-                        # implicitly when our writes are well-formed.
+                    yield from _forward_lines(r)
         except Exception as e:  # noqa: BLE001
             yield (f'event: error\ndata: {{"error": {json.dumps(f"{type(e).__name__}: {e}")}}}\n\n')
 
