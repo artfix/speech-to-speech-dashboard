@@ -505,22 +505,12 @@ def get_full_schema() -> dict[str, Any]:
         }
     )
 
-    # The remaining ModuleArguments fields (log_level, live_transcription, ...)
-    # go on an Advanced tab. We don't duplicate the ones we already showed.
-    shown_in_mode = {"stt", "llm_backend", "tts", "mode", "device", "local_mac_optimal_settings"}
-    advanced_fields = [
-        f
-        for f in _schema_for_class(ModuleArguments, group="advanced", title="Advanced")
-        if f["name"] not in shown_in_mode
-    ]
-    groups.append(
-        {
-            "id": "advanced",
-            "title": "Advanced",
-            "description": "Log level, live transcription, and other pipeline-wide options.",
-            "fields": advanced_fields,
-        }
-    )
+    # The remaining ModuleArguments fields (log_level, live_transcription,
+    # llm-proxy, num_pipelines, ...) are pipeline-wide options that used to
+    # live on a separate Advanced tab. That tab was a strict subset of Mode
+    # (every Advanced field was already rendered in the Mode group above), so
+    # it was pure duplication. The fields stay where they already are — in the
+    # Mode tab — and no Advanced group is emitted.
 
     return {"groups": groups, "backend_meta": _backend_meta()}
 

@@ -24,28 +24,55 @@ Windows:
 start_web_ui.bat
 ```
 
-Your browser opens to `http://localhost:8050`. You'll see a sidebar with tabs: **Mode**, **VAD**, **STT**, **LLM**, **TTS**, **Advanced**, **Status & Logs**, **Guide**, **Settings**, **Control**.
+Your browser opens to `http://localhost:8050`. You'll see a sidebar with tabs: **Mode**, **VAD**, **STT**, **LLM**, **TTS**, **Status & Logs**, **Settings**, **Hermes**, **Guide**. The pipeline Start / Stop / Restart / Unload-TTS / Shutdown controls live in the **Controls** section at the bottom of the **Status & Logs** tab.
 
 ## 3. Your first conversation (local microphone + local LLM)
 
 The defaults are a working configuration. If your machine has a CUDA GPU and you have `OPENAI_API_KEY` exported, the defaults will Just Work:
 
-1. Open the **Control** tab.
-2. Click **▶ Start Pipeline**.
-3. Click **Status & Logs** to see it come up.
+1. Open the **Status & Logs** tab and scroll to the **Controls** section.
+2. Click **Start Pipeline**.
+3. Watch the status cards and the log console above to see it come up.
 4. Talk to your microphone (the pipeline's default mode is `realtime` — it waits for an OpenAI Realtime client to connect via WebSocket).
 
 To use your machine's microphone directly without writing a client, set the mode to `local`:
 
 1. Open the **Mode** tab.
 2. Change `--mode` to `local`.
-3. Click **Save Settings** then **Control → Restart Pipeline**.
+3. Click **Save Settings**, then open **Status & Logs → Controls** and click **Restart Pipeline**.
 
 ---
 
 # Pointing at Ollama on another machine
 
-This is the most common setup for a network with a beefy Windows/Linux box running models and a lighter Linux/Mac box running the voice pipeline.
+> ⚠️ **Ollama is deprecated for this dashboard.** Ollama's OpenAI-compatible
+> server has two behaviors that make it a poor fit for a low-latency voice
+> pipeline, and the dashboard is not allowed to patch the pipeline to work
+> around them (CLAUDE.md forbids editing `src/speech_to_speech/`):
+>
+> 1. **`num_ctx` doesn't reliably apply.** Ollama silently ignores `num_ctx`
+>    on requests for a model already resident in its KV cache, so changing
+>    the context window requires an unload + reload dance (see the
+>    "Ollama model lifecycle" section under Common issues).
+> 2. **No native `keep_alive` on the pipeline's own requests.** The dashboard
+>    can't inject `keep_alive` into the LLM calls the pipeline makes, so it
+>    falls back to a side-channel pinger (`--llm-keepalive`) that is fragile
+>    (see "Ollama: keep the LLM model loaded between requests" under Common
+>    issues).
+>
+> The dashboard ships workarounds for both, but they are band-aids. **For a
+> new setup, use [LM Studio](https://lmstudio.ai),
+> [llama.cpp](https://github.com/ggerganov/llama.cpp),
+> [vLLM](https://github.com/vllm-ai/vllm), or a hosted provider (OpenAI / HF
+> Inference / OpenRouter) instead** — all expose the same OpenAI-compatible
+> endpoint and honor context size and keepalive without these quirks. Ollama
+> remains selectable for users who already rely on it; this section is kept
+> for them. It will be un-deprecated if/when upstream Ollama fixes both
+> behaviors.
+
+This setup is kept for existing Ollama users. For a new deployment, prefer
+LM Studio or llama.cpp (see the provider table under "Pointing at OpenAI /
+HF Inference Providers" below).
 
 ## On the machine running Ollama
 
@@ -79,7 +106,7 @@ This is the most common setup for a network with a beefy Windows/Linux box runni
 3. `--responses-api-base-url`: `http://192.168.1.42:11434/v1`
 4. `--responses-api-api-key`: empty string (Ollama ignores it).
 5. `--responses-api-stream`: enabled.
-6. Click **Save Settings**, then **Control → Start Pipeline**.
+6. Click **Save Settings**, then open **Status & Logs → Controls** and click **Start Pipeline**.
 
 That's it. The pipeline will talk to Ollama over HTTP for the LLM, while STT and TTS run locally on the machine running the dashboard.
 
@@ -94,8 +121,10 @@ Both work with the OpenAI-compatible API slot. The only difference is the `base_
 | OpenAI | `responses-api` or `chat-completions` | (leave default) | `OPENAI_API_KEY` |
 | HF Inference Providers | `responses-api` or `chat-completions` | `https://router.huggingface.co/v1` | `HF_TOKEN` |
 | OpenRouter | `responses-api` or `chat-completions` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| **LM Studio (local)** | `chat-completions` | `http://localhost:1234/v1` | (empty) |
 | vLLM (local) | `responses-api` or `chat-completions` | `http://localhost:8000/v1` | (empty) |
 | llama.cpp server | `responses-api` or `chat-completions` | `http://127.0.0.1:8080/v1` | (empty) |
+| Ollama (deprecated — see notice above) | `chat-completions` | `http://<ip>:11434/v1` | (empty) |
 
 For `chat-completions` you may also want to set `--responses-api-reasoning-effort none` if the model gets chatty with its chain-of-thought and you want snappy voice responses.
 
@@ -180,7 +209,7 @@ rm -rf ~/.cache/huggingface/hub/models--Olicorne--parakeet-tdt-0.6b-v3-smoothqua
 ## LLM (Language Model)
 
 - `responses-api` (default): OpenAI's `/v1/responses` endpoint. Use with OpenAI directly, or any provider that implements that path.
-- `chat-completions`: OpenAI's `/v1/chat/completions` endpoint. **This is the one Ollama supports.** Also good for vLLM and llama.cpp servers.
+- `chat-completions`: OpenAI's `/v1/chat/completions` endpoint. Use this for LM Studio, vLLM, and llama.cpp servers. Ollama also speaks it, but Ollama is deprecated — see the notice at the top of "Pointing at Ollama on another machine".
 - `transformers`: local in-process. Needs a CUDA GPU and a HuggingFace model id.
 - `mlx-lm`: local in-process, Apple Silicon only. Fastest for M-series Macs.
 
@@ -318,6 +347,11 @@ uv pip install --no-deps chatterbox-tts==0.1.7 \
 
 ## Ollama: keep the LLM model loaded between requests
 
+> ⚠️ Ollama is deprecated (see the notice at the top of "Pointing at Ollama
+> on another machine"). This section documents the dashboard's band-aid
+> workaround for Ollama's lack of a reliable native `keep_alive` on the
+> pipeline's own requests. LM Studio / llama.cpp / vLLM don't need this.
+
 Ollama unloads a model from VRAM **5 minutes** after the last request by
 default. For a voice-agent pipeline that's painful — the next user
 utterance after a 5-minute pause pays a ~20 s reload before the first
@@ -395,11 +429,16 @@ The **Toggle Verbose** button on the Status tab restarts the pipeline with `--lo
 
 The pipeline keeps the TTS model loaded in RAM while running. Chatterbox Turbo is ~700 MB, the full English variant is ~1 GB, parakeet is another ~600 MB — the Python interpreter baseline adds ~300 MB, so a full chatterbox pipeline sits at 1.5-2 GB before any of the LLM-related caches.
 
-To free RAM **without stopping the pipeline** (so the VAD, STT, and LLM stay warm), open the **Control** tab and click **🧹 Unload TTS Model**. The TTS handler drops the model in place and runs `gc.collect()`. The next TTS request reloads the model — ~15-20s on CPU, ~5s on CUDA. The robot will pause for that long on the very first reply after unloading, then behave normally.
+To free RAM **without stopping the pipeline** (so the VAD, STT, and LLM stay warm), open the **Status & Logs** tab, scroll to the **Controls** section, and click **Unload TTS Model**. The TTS handler drops the model in place and runs `gc.collect()`. The next TTS request reloads the model — ~15-20s on CPU, ~5s on CUDA. The robot will pause for that long on the very first reply after unloading, then behave normally.
 
-If you want to free **everything**, click **■ Stop Pipeline**. The subprocess exits and the OS reclaims all of it. Click **▶ Start Pipeline** to start over (model load is again ~15-20s on CPU).
+If you want to free **everything**, click **Stop Pipeline** (same Controls section). The subprocess exits and the OS reclaims all of it. Click **Start Pipeline** to start over (model load is again ~15-20s on CPU).
 
 ## Ollama model lifecycle: num_ctx doesn't always stick
+
+> ⚠️ Ollama is deprecated (see the notice at the top of "Pointing at Ollama
+> on another machine"). This section documents the dashboard's band-aid
+> workaround for Ollama silently dropping `num_ctx` on already-loaded models.
+> LM Studio / llama.cpp / vLLM apply context size on every request.
 
 The `--responses-api-num-ctx` setting tells Ollama what context window
 to use when it loads the model. The dashboard saves the value, the
@@ -451,7 +490,7 @@ model.
 
 `web_ui_settings.json` in the repo root. It's gitignored by default. You can edit it directly, import / export it via the **Settings** tab, or delete it to reset to defaults.
 
-A working example configuration is checked in as `web_ui_settings.example.json`. From the **Settings** tab, click **Import JSON** and pick that file to start with a real configuration (Ollama + qwen3-TTS + parakeet STT, realtime mode) instead of bare defaults.
+A working example configuration is checked in as `web_ui/settings.example.json` (llama.cpp + qwen3-TTS + parakeet STT, realtime mode). From the **Settings** tab, click **Load Example** to load it in one click instead of starting from bare defaults, then **Save Settings** to persist it.
 
 ## How do I get the realtime WebSocket URL?
 
@@ -601,7 +640,7 @@ changes.
 5. Open the **LLM** tab, change **Backend type** from *Direct backend*
    to *Hermes Agent*. The URL and api_key fields auto-fill. Pick
    the same model name you configured in hermes.
-6. **Start Pipeline** (Control tab).
+6. **Start Pipeline** (Status & Logs → Controls).
 
 The pipeline now talks to the dashboard's `/hermes-proxy/v1/*`, which
 forwards to hermes with the right session header. Voice → STT → LLM

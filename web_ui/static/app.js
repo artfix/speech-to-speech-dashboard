@@ -322,12 +322,10 @@ const TAB_DEFS = [
     { id: 'stt', label: 'STT', icon: 'S' },
     { id: 'llm', label: 'LLM', icon: 'L' },
     { id: 'tts', label: 'TTS', icon: 'T' },
-    { id: 'advanced', label: 'Advanced', icon: '*' },
     { id: 'status', label: 'Status & Logs', icon: '#' },
-    { id: 'guide', label: 'Guide', icon: '?' },
     { id: 'settings', label: 'Settings', icon: '$' },
-    { id: 'control', label: 'Control', icon: '!' },
     { id: 'hermes', label: 'Hermes', icon: 'H' },
+    { id: 'guide', label: 'Guide', icon: '?' },
 ];
 
 function buildNavAndTabs() {
@@ -455,7 +453,7 @@ function renderAll() {
     for (const t of TAB_DEFS) {
         const tab = $(`#tab-${t.id}`);
         tab.textContent = '';
-        if (['mode', 'vad', 'stt', 'llm', 'tts', 'advanced'].includes(t.id)) {
+        if (['mode', 'vad', 'stt', 'llm', 'tts'].includes(t.id)) {
             renderSettingsTab(tab, t.id);
         } else if (t.id === 'status') {
             renderStatusTab(tab);
@@ -463,8 +461,6 @@ function renderAll() {
             renderGuideTab(tab);
         } else if (t.id === 'settings') {
             renderSettingsFileTab(tab);
-        } else if (t.id === 'control') {
-            renderControlTab(tab);
         } else if (t.id === 'hermes') {
             renderHermesTab(tab);
         }
@@ -1035,7 +1031,16 @@ function renderField(f, parentTitle) {
                     // --model-name field swaps in/out of dropdown mode
                     // based on whether the new URL looks like Ollama.
                     if (isOllamaBaseUrl) {
-                        if (_looksLikeOllamaUrl(v)) {
+                        const isOllama = _looksLikeOllamaUrl(v);
+                        // _prevBaseUrlWasOllama tracks the URL's "Ollama-
+                        // ness" from the previous keystroke. Lazily seeded
+                        // from the field's render-time value so the very
+                        // first keystroke has a correct baseline.
+                        if (state._prevBaseUrlWasOllama === undefined) {
+                            state._prevBaseUrlWasOllama = _looksLikeOllamaUrl(val);
+                        }
+                        const wasOllama = state._prevBaseUrlWasOllama;
+                        if (isOllama) {
                             scheduleOllamaFetch(v, state.settings['--responses-api-api-key']);
                         } else {
                             // Non-Ollama URL — clear the cache so the
@@ -1043,27 +1048,41 @@ function renderField(f, parentTitle) {
                             state.ollamaModels = null;
                             state.ollamaBaseUrlAtFetch = '';
                         }
-                        // Re-render the active settings tab so the
-                        // model field re-evaluates the dropdown
-                        // decision. Wait one tick so the debounced
-                        // Ollama fetch (400 ms) has time to land;
-                        // the second pass will pick up the populated
-                        // ollamaModels state. We only re-render the
-                        // visible subgroup to keep input focus +
-                        // scroll position elsewhere. Clear the tab's
-                        // existing children first so we don't double-
-                        // render.
-                        const activeTab = $('.tab.active');
-                        if (activeTab && activeTab.dataset && activeTab.dataset.tab) {
-                            const tabId = activeTab.dataset.tab;
-                            setTimeout(() => {
-                                if (tabId === 'llm') {
+                        // Only re-render the LLM tab when the URL's
+                        // "Ollama-ness" actually FLIPS — that's the only
+                        // event that changes whether --model-name is a
+                        // dropdown or a text input. Re-rendering on every
+                        // keystroke destroys the focused base-url input
+                        // (this field), making it impossible to type into.
+                        // The async fetch resolve handler already does
+                        // its own re-render once the model list lands, so
+                        // no keystroke re-render is needed for the
+                        // "becomes Ollama" direction either. Clear the
+                        // tab's existing children first so we don't
+                        // double-render.
+                        if (isOllama !== wasOllama) {
+                            const activeTab = $('.tab.active');
+                            if (activeTab && activeTab.dataset && activeTab.dataset.tab === 'llm') {
+                                setTimeout(() => {
                                     activeTab.replaceChildren();
                                     renderSettingsTab(activeTab, 'llm');
                                     applyDisabledStates();
-                                }
-                            }, 500);
+                                    // Re-grab focus + put the caret at
+                                    // the end so the user can keep typing
+                                    // the URL seamlessly across the
+                                    // one-time dropdown swap.
+                                    const inp = document.getElementById(fieldId);
+                                    if (inp) {
+                                        inp.focus();
+                                        const len = inp.value.length;
+                                        try {
+                                            inp.setSelectionRange(len, len);
+                                        } catch (_) {}
+                                    }
+                                }, 500);
+                            }
                         }
+                        state._prevBaseUrlWasOllama = isOllama;
                     }
                 }
             });
@@ -1985,6 +2004,33 @@ function renderStatusTab(tab) {
     const statusGrid = el('div', { class: 'status-grid', id: 'status-grid' });
     tab.appendChild(statusGrid);
 
+    // ---- Action cards -----------------------------------------------
+    // The five pipeline/dashboard controls that used to live on the
+    // Control tab, now pressable cards shaped like the metric cards
+    // above. Stop and Shutdown go through their existing confirm
+    // modals (defined in the handlers themselves), and unloadTtsModel
+    // already enforces the "stop qwen3 first" guard server-side, so no
+    // extra warning banner is needed here.
+    tab.appendChild(el('div', { class: 'status-section-label', style: { marginTop: '16px' } }, 'Controls'));
+    const actionGrid = el('div', { class: 'status-grid', id: 'action-grid' });
+    tab.appendChild(actionGrid);
+    const actions = [
+        { label: 'Start Pipeline', cls: 'btn-primary', handler: startPipeline },
+        { label: 'Stop Pipeline', cls: '', handler: stopPipeline },
+        { label: 'Restart Pipeline', cls: '', handler: restartPipeline },
+        { label: 'Unload TTS Model', cls: '', handler: unloadTtsModel },
+        { label: 'Shutdown Everything', cls: 'btn-danger', handler: shutdownAll },
+    ];
+    for (const a of actions) {
+        const card = el('div', { class: 'status-action-card' }, [
+            el('button', {
+                class: `status-action-btn ${a.cls}`,
+                onclick: a.handler,
+            }, a.label),
+        ]);
+        actionGrid.appendChild(card);
+    }
+
     // The Command line lives in its own row so a long arg list doesn't
     // stretch the State / PID / Uptime cards next to it.
     tab.appendChild(el('div', { class: 'status-section-label' }, 'Command'));
@@ -2471,66 +2517,25 @@ function importSettings() {
 }
 
 // One-click load of the bundled example config. Fetches the JSON from
-// /static-repo/ (the dashboard's repo-root mount) and merges it onto
-// the defaults, exactly like importSettings does for a user-picked file
-// — but with no file picker dialog. Useful on a fresh clone where the
-// user wants a real working config (Ollama + qwen3-TTS + parakeet STT,
-// realtime mode) instead of bare defaults. The example file lives at
-// the repo root and is also discoverable via the Settings tab's Import
-// JSON button.
+// /static-repo/web_ui/settings.example.json (the dashboard's repo-root
+// mount + the web_ui path) and merges it onto the defaults, exactly like
+// importSettings does for a user-picked file — but with no file picker
+// dialog. Useful on a fresh clone where the user wants a real working
+// config (llama.cpp + qwen3-TTS + parakeet STT, realtime mode) instead of
+// bare defaults.
 async function loadExampleSettings() {
     try {
-        const r = await fetch('/static-repo/web_ui_settings.example.json', { cache: 'no-cache' });
+        const r = await fetch('/static-repo/web_ui/settings.example.json', { cache: 'no-cache' });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const obj = await r.json();
         state.settings = { ...state.defaults, ...obj };
         state.saved = false;
         applyTheme(state.settings.theme || 'cyberpunk-neon');
-        toast('Example loaded (Ollama + qwen3-TTS + parakeet STT). Click Save to persist.', 'success');
+        toast('Example loaded (llama.cpp + qwen3-TTS + parakeet STT). Click Save to persist.', 'success');
         renderAll();
     } catch (e) {
         toast('Could not load example: ' + e.message, 'error');
     }
-}
-
-// ---- Control tab -----------------------------------------------------
-
-function renderControlTab(tab) {
-    tab.appendChild(el('div', { class: 'tab-header' }, [
-        el('h1', { class: 'tab-title' }, 'Control'),
-        el('div', { class: 'tab-subtitle' }, 'Start, stop, and shut down the pipeline and the dashboard itself.'),
-    ]));
-
-    const row1 = el('div', { class: 'btn-row' }, [
-        el('button', { class: 'btn btn-primary btn-large', onclick: startPipeline }, '▶ Start Pipeline'),
-        el('button', { class: 'btn btn-large', onclick: stopPipeline }, '■ Stop Pipeline'),
-        el('button', { class: 'btn btn-large', onclick: restartPipeline }, '↻ Restart Pipeline'),
-    ]);
-    tab.appendChild(row1);
-
-    tab.appendChild(el('h3', { style: { marginTop: '32px' } }, 'Memory'));
-    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '12px', maxWidth: '720px' } }, 'The pipeline keeps the TTS model in RAM while running. Use this to drop the TTS model from memory without killing the pipeline; the model reloads on the next TTS request (~20s on CPU, ~5s on GPU).'));
-
-    const isQwen3 = (state.settings['--tts'] || '').toLowerCase() === 'qwen3';
-    if (isQwen3) {
-        tab.appendChild(el('div', {
-            class: 'warning-banner',
-            style: { marginBottom: '12px', maxWidth: '720px' }
-        }, '⚠️ Qwen3-TTS: stop the pipeline first, then click Unload TTS Model to free VRAM.'));
-    }
-
-    const rowMem = el('div', { class: 'btn-row' }, [
-        el('button', { class: 'btn btn-large', onclick: unloadTtsModel }, '🧹 Unload TTS Model'),
-    ]);
-    tab.appendChild(rowMem);
-
-    tab.appendChild(el('h3', { style: { marginTop: '32px' } }, 'Danger Zone'));
-    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '12px' } }, 'Stops the pipeline AND closes the dashboard web server. You will need to re-run start_web_ui.sh to come back.'));
-
-    const row2 = el('div', { class: 'btn-row' }, [
-        el('button', { class: 'btn btn-danger btn-large', onclick: shutdownAll }, '⏻ Shutdown Everything'),
-    ]);
-    tab.appendChild(row2);
 }
 
 // ---- Hermes Agent tab ------------------------------------------------
