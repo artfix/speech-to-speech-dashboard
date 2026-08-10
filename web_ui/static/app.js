@@ -328,7 +328,6 @@ const TAB_DEFS = [
     { id: 'llm', label: 'LLM', icon: 'L' },
     { id: 'tts', label: 'TTS', icon: 'T' },
     { id: 'status', label: 'Status & Logs', icon: '#' },
-    { id: 'settings', label: 'Settings', icon: '$' },
     { id: 'hermes', label: 'Hermes', icon: 'H' },
     { id: 'guide', label: 'Guide', icon: '?' },
 ];
@@ -464,8 +463,6 @@ function renderAll() {
             renderStatusTab(tab);
         } else if (t.id === 'guide') {
             renderGuideTab(tab);
-        } else if (t.id === 'settings') {
-            renderSettingsFileTab(tab);
         } else if (t.id === 'hermes') {
             renderHermesTab(tab);
         }
@@ -2049,6 +2046,39 @@ function renderStatusTab(tab) {
         actionGrid.appendChild(card);
     }
 
+    // ---- Configuration (moved from the former Settings tab) ----------
+    // Sits right under the Controls cards so all the "do something with
+    // the running pipeline / saved settings" actions are grouped together
+    // at the top of the tab — no scrolling to the bottom to find Save.
+    // File status + Environment Variables editor + Save / Reset / Export
+    // / Import / Load Example. Standalone functions keyed by stable IDs,
+    // so placement is behaviour-neutral. renderEnvEditor() backs onto
+    // state.settings.env by id #env-editor wherever the container lives.
+    tab.appendChild(el('div', { id: 'configuration-section', class: 'status-section-label', style: { marginTop: '16px' } }, 'Configuration'));
+    tab.appendChild(el('div', { class: 'text-dim', style: {
+        maxWidth: '1200px', margin: '0 auto 8px auto', padding: '0 4px'
+    } }, [
+        'Settings file: ', el('span', { class: 'text-mono' }, state.savedPath), el('br'),
+        'Status: ', el('span', { class: 'text-mono' },
+            state.saved ? 'saved' : 'not saved (using defaults)'),
+    ]));
+    const envEditor = el('div', { id: 'env-editor' });
+    tab.appendChild(el('div', { class: 'hermes-panel' }, [
+        el('div', { class: 'status-section-label', style: { margin: '0 0 4px 0' } },
+            'Environment Variables'),
+        el('div', { class: 'text-dim', style: { fontSize: '12px' } },
+            'Extra env vars passed to the pipeline subprocess (HF_TOKEN, OPENAI_API_KEY, …).'),
+        envEditor,
+    ]));
+    renderEnvEditor();
+    tab.appendChild(el('div', { class: 'btn-row', style: { maxWidth: '1200px', margin: '0 auto 16px auto' } }, [
+        el('button', { class: 'btn btn-primary btn-large', onclick: saveSettings }, 'Save Settings'),
+        el('button', { class: 'btn', onclick: resetSettings }, 'Reset to Defaults'),
+        el('button', { class: 'btn', onclick: exportSettings }, 'Export JSON'),
+        el('button', { class: 'btn', onclick: importSettings }, 'Import JSON'),
+        el('button', { class: 'btn', onclick: loadExampleSettings }, 'Load Example'),
+    ]));
+
     // The Command line lives in its own row so a long arg list doesn't
     // stretch the State / PID / Uptime cards next to it.
     tab.appendChild(el('div', { class: 'status-section-label' }, 'Command'));
@@ -2567,38 +2597,10 @@ function _guideEscape(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// ---- Settings (file) tab --------------------------------------------
-
-function renderSettingsFileTab(tab) {
-    tab.appendChild(el('div', { class: 'tab-header' }, [
-        el('h1', { class: 'tab-title' }, 'Settings'),
-        el('div', { class: 'tab-subtitle' }, 'Save, reset, import, and export your configuration.'),
-    ]));
-
-    tab.appendChild(el('div', { class: 'tab-header', style: { borderBottom: 'none' } }, [
-        el('div', { class: 'text-dim' }, [
-            'Settings file: ', el('span', { class: 'text-mono' }, state.savedPath), el('br'),
-            'Status: ', el('span', { class: 'text-mono' }, state.saved ? 'saved' : 'not saved (using defaults)'),
-        ]),
-    ]));
-
-    const envTitle = el('h3', {}, 'Environment Variables');
-    tab.appendChild(envTitle);
-    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '12px' } }, 'Extra environment variables passed to the pipeline subprocess. Useful for HF_TOKEN, OPENAI_API_KEY, etc.'));
-    const envEditor = el('div', { id: 'env-editor' });
-    tab.appendChild(envEditor);
-    renderEnvEditor();
-
-    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Actions'));
-    const row = el('div', { class: 'btn-row' }, [
-        el('button', { class: 'btn btn-primary btn-large', onclick: saveSettings }, 'Save Settings'),
-        el('button', { class: 'btn', onclick: resetSettings }, 'Reset to Defaults'),
-        el('button', { class: 'btn', onclick: exportSettings }, 'Export JSON'),
-        el('button', { class: 'btn', onclick: importSettings }, 'Import JSON'),
-        el('button', { class: 'btn', onclick: loadExampleSettings }, 'Load Example'),
-    ]);
-    tab.appendChild(row);
-}
+// ---- Settings file actions (moved into the Status & Logs tab) -----
+// renderSettingsFileTab used to be its own sidebar tab; it was folded into
+// renderStatusTab's "Configuration" section. The helpers below are all
+// standalone and id-keyed, so they work from wherever they're mounted.
 
 function renderEnvEditor() {
     const ed = $('#env-editor');

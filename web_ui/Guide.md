@@ -24,7 +24,7 @@ Windows:
 start_web_ui.bat
 ```
 
-Your browser opens to `http://localhost:8050`. You'll see a sidebar with tabs: **Mode**, **VAD**, **STT**, **LLM**, **TTS**, **Status & Logs**, **Settings**, **Hermes**, **Guide**. The pipeline Start / Stop / Restart / Unload-TTS / Shutdown controls live in the **Controls** section at the bottom of the **Status & Logs** tab.
+Your browser opens to `http://localhost:8050`. You'll see a sidebar with tabs: **Mode**, **VAD**, **STT**, **LLM**, **TTS**, **Status & Logs**, **Hermes**, **Guide**. The **Status & Logs** tab groups the action cards at the top: **Controls** (Start / Stop / Restart / Unload-TTS / Shutdown) and, right under them, **Configuration** (the Environment Variables editor plus Save / Reset to Defaults / Export JSON / Import JSON / Load Example).
 
 ## 3. Your first conversation (local microphone + local LLM)
 
@@ -128,7 +128,7 @@ Both work with the OpenAI-compatible API slot. The only difference is the `base_
 
 For `chat-completions` you may also want to set `--responses-api-reasoning-effort none` if the model gets chatty with its chain-of-thought and you want snappy voice responses.
 
-API keys are read from the process environment of the dashboard. Add them in the **Settings → Environment Variables** editor (Save, then Restart) or export them before running `start_web_ui.sh`.
+API keys are read from the process environment of the dashboard. Add them in the **Status & Logs → Configuration → Environment Variables** editor (Save, then Restart) or export them before running `start_web_ui.sh`.
 
 ---
 
@@ -421,7 +421,7 @@ Open the **Status & Logs** tab and look at the error. Common causes:
 - Missing pip extra for the chosen backend.
 - CUDA wheel mismatch.
 - Invalid model name.
-- API key missing in the environment (use Settings → Environment Variables, then Save and Restart).
+- API key missing in the environment (use Status & Logs → Configuration → Environment Variables, then Save and Restart).
 
 The **Toggle Verbose** button on the Status tab restarts the pipeline with `--log-level debug`, which surfaces everything including import errors and download progress.
 
@@ -488,9 +488,9 @@ model.
 
 ## Where are my settings saved?
 
-`web_ui_settings.json` in the repo root. It's gitignored by default. You can edit it directly, import / export it via the **Settings** tab, or delete it to reset to defaults.
+`web_ui_settings.json` in the repo root. It's gitignored by default. You can edit it directly, import / export it via the **Status & Logs → Configuration** section, or delete it to reset to defaults.
 
-A working example configuration is checked in as `web_ui/settings.example.json` (llama.cpp + qwen3-TTS + parakeet STT, realtime mode). From the **Settings** tab, click **Load Example** to load it in one click instead of starting from bare defaults, then **Save Settings** to persist it.
+A working example configuration is checked in as `web_ui/settings.example.json` (llama.cpp + qwen3-TTS + parakeet STT, realtime mode). From the **Status & Logs → Configuration** section, click **Load Example** to load it in one click instead of starting from bare defaults, then **Save Settings** to persist it.
 
 ## How do I get the realtime WebSocket URL?
 
@@ -505,10 +505,10 @@ sends `voice` in `session.update`. qwen3-TTS doesn't recognize OpenAI's
 not qwen3 speakers.
 
 The dashboard **silently ignores the client's `voice` field** and uses
-whatever you set in **Settings → TTS → Qwen3-TTS → Speaker**. To change
+whatever you set in **TTS → Qwen3-TTS → Speaker**. To change
 the voice:
 
-1. Open the dashboard's **Settings** tab → **TTS** → **Qwen3-TTS** subgroup.
+1. Open the dashboard's **TTS** tab → **Qwen3-TTS** subgroup.
 2. Pick a speaker from the **Speaker** dropdown. The 9 CustomVoice
    presets are listed (Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan,
    Aiden, Ono_Anna, Sohee).
@@ -652,7 +652,31 @@ A running changelog of dashboard-level changes (the pipeline's own
 version in `src/speech_to_speech/__init__.py` is upstream's number and
 is not touched by these). Newest first.
 
-## 0.5.9 (current)
+## 0.5.10 (current)
+
+- **The Settings tab is gone; its options moved into Status & Logs.** A new
+  **Configuration** section sits right under the **Controls** cards at the
+  top of the Status & Logs tab, holding the settings file path + saved-status
+  line, the Environment Variables editor, and the Save / Reset to Defaults /
+  Export JSON / Import JSON / Load Example buttons — so all the "act on the
+  pipeline / settings" controls are grouped together, no scrolling to the
+  bottom to find Save. The sidebar drops from 9 tabs to 8. Nothing about how
+  settings are stored, loaded, or applied changed — the same standalone
+  functions and the same `web_ui_settings.json` file back it, so the move is
+  behaviour-neutral. A stale `#settings` URL hash now falls back to the Mode
+  tab.
+- **The Mode / VAD / STT / LLM / TTS tabs now group their fields into panel
+  cards**, matching the card style of the Status & Logs / Hermes / Guide tabs.
+  The flat top-level field grid is wrapped in a centered bordered panel
+  (same vocabulary as the Hermes panels), subgroups are aligned to the same
+  centered max-width, subgroup titles are harmonized with the muted section
+  labels used elsewhere, and the TTS voice-library containers + GPU badge are
+  centered to line up with the cards. This is a CSS-only change — no field
+  ids, classes, handlers, or DOM structure changed, so the form logic
+  (disabled-when, the Hermes backend toggle, Ollama keepalive, model
+  dropdown, voice libraries) is untouched.
+
+## 0.5.9
 
 - **Hermes tab redesigned into a card dashboard**, matching the Status &
   Logs tab. A **Status** row of metric cards (State, Model, Endpoint,

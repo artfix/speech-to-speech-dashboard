@@ -213,14 +213,41 @@ html, body {
 
 /* ---- Form ---- */
 
+/* The top-level group grid on the Mode/VAD/STT/LLM/TTS tabs. Grouped into
+   a panel card (same vocabulary as .hermes-panel on the other tabs) so the
+   flat fields sit in a bordered, centered, max-width container like the
+   rest of the dashboard. The field internals (.field / inputs / ids) are
+   NOT changed — this is container styling only. */
 .form-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 16px 24px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    max-width: 1200px;
+    margin: 0 auto 16px auto;
 }
 
 .form-grid .full {
     grid-column: 1 / -1;
+}
+
+/* A .form-grid inside a .subgroup is already wrapped in the subgroup's own
+   card, so strip the double border/padding/width there. */
+.subgroup .form-grid {
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    max-width: none;
+}
+
+@media (max-width: 640px) {
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .field {
@@ -419,7 +446,8 @@ html, body {
    when the user picked chatterbox + a GPU device. Indicates whether the
    installed torch supports the GPU (and what will happen on Start). */
 .gpu-badge {
-    margin: 16px 0 4px 0;
+    margin: 16px auto 4px auto;
+    max-width: 1200px;
     padding: 10px 14px;
     border-radius: 8px;
     background: rgba(80, 80, 80, 0.18);
@@ -458,7 +486,8 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin: 20px 0 12px 0;
+    margin: 20px auto 12px auto;
+    max-width: 1200px;
     gap: 12px;
 }
 .voice-library-header h2 {
@@ -470,7 +499,8 @@ html, body {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 12px;
-    margin-bottom: 24px;
+    margin: 0 auto 24px auto;
+    max-width: 1200px;
 }
 .voice-card {
     background: var(--bg-elev-1);
@@ -601,21 +631,27 @@ html, body {
 
 /* ---- Subgroups (per-backend fields) ---- */
 
+/* Subgroup cards on the LLM/TTS tabs. Already card-styled; now aligned to
+   the same centered max-width as .form-grid / .hermes-panel so the card
+   stack lines up with the rest of the page. */
 .subgroup {
-    margin-top: 20px;
+    margin: 0 auto 16px auto;
     padding: 16px;
+    max-width: 1200px;
     background: var(--bg-elev);
     border: 1px solid var(--border);
     border-radius: var(--radius);
 }
 
+/* Harmonized with .status-section-label (muted, small, uppercase) so the
+   subgroup headers match the section labels on the other tabs. */
 .subgroup-title {
-    font-family: var(--font-mono);
-    color: var(--accent-2);
-    font-size: 14px;
+    color: var(--text-dim);
+    font-size: 11px;
     margin-bottom: 12px;
     text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 0.5px;
+    opacity: 0.85;
 }
 
 /* ---- Logs ---- */
