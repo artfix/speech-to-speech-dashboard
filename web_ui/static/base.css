@@ -798,29 +798,66 @@ html, body {
 
 /* ---- Guide ---- */
 
-.guide-content {
-    max-width: 800px;
+/* Sub-tab bar: one pill per top-level `#` section. */
+.guide-subtabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 auto 16px auto;
+    max-width: 1200px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+.guide-subtab {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+    color: var(--text-dim);
+    font-family: var(--font);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all var(--transition);
+    white-space: nowrap;
+}
+.guide-subtab:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+.guide-subtab.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--bg);
+    font-weight: 600;
 }
 
-.guide-content h1,
-.guide-content h2,
-.guide-content h3 {
+.guide-content {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+/* Each `##` block renders as a card (reuses .hermes-panel). */
+.guide-card {
+    margin: 0 auto 16px auto;
+}
+.guide-card-title {
     color: var(--accent);
-    margin: 24px 0 12px;
+    font-size: 16px;
+    margin: 0 0 8px;
     border-bottom: 1px solid var(--border);
     padding-bottom: 6px;
 }
-
-.guide-content h1 { font-size: 24px; }
-.guide-content h2 { font-size: 20px; }
-.guide-content h3 { font-size: 16px; border-bottom: none; }
-
+.guide-content h4 {
+    color: var(--accent-2);
+    font-size: 14px;
+    margin: 14px 0 6px;
+}
 .guide-content p,
 .guide-content li {
     color: var(--text);
     margin-bottom: 8px;
+    line-height: 1.5;
 }
-
 .guide-content code {
     background: var(--bg-elev-2);
     border: 1px solid var(--border);
@@ -830,7 +867,6 @@ html, body {
     font-size: 12px;
     color: var(--accent-2);
 }
-
 .guide-content pre {
     background: var(--bg-elev-2);
     border: 1px solid var(--border);
@@ -839,15 +875,58 @@ html, body {
     overflow-x: auto;
     margin: 8px 0 16px;
 }
-
 .guide-content pre code {
     background: none;
     border: none;
     padding: 0;
+    color: var(--text);
+    font-size: 13px;
 }
-
 .guide-content ul, .guide-content ol {
     padding-left: 24px;
+    margin-bottom: 12px;
+}
+.guide-content a {
+    color: var(--accent-2);
+    text-decoration: underline;
+}
+.guide-content blockquote {
+    border-left: 3px solid var(--accent);
+    background: var(--bg-elev-2);
+    padding: 10px 14px;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin: 8px 0 16px;
+}
+.guide-content blockquote p {
+    margin-bottom: 4px;
+    color: var(--text-dim);
+}
+.guide-content blockquote p:last-child { margin-bottom: 0; }
+
+/* GFM tables rendered from the markdown. */
+.guide-table-wrap {
+    overflow-x: auto;
+    margin: 8px 0 16px;
+}
+.guide-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.guide-table th,
+.guide-table td {
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+}
+.guide-table th {
+    background: var(--bg-elev-2);
+    color: var(--accent);
+    font-weight: 600;
+}
+.guide-table tr:nth-child(even) td {
+    background: var(--bg-elev);
 }
 
 /* ---- Modal ---- */
@@ -986,6 +1065,42 @@ html, body {
 @keyframes hermes-badge-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.35; }
+}
+
+/* ---- Hermes tab: card-style dashboard layout ---- */
+/* Reuses .status-grid / .status-card / .status-action-card / .status-section-label
+   from the Status panel so the Hermes tab reads like a dashboard. Panels are
+   the wider card containers that hold inputs / consoles / logs. */
+.hermes-panel {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 0 auto 16px auto;
+    max-width: 1200px;
+}
+.hermes-grid-2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 4px 24px;
+    align-items: start;
+}
+.hermes-panel .text-dim { max-width: none; }
+
+/* Hermes tab: 3 cards per row for the Status + Controls grids, not the
+   5-per-row the Status & Logs tab uses. Scoped to #tab-hermes so the
+   global .status-grid rule on the Status & Logs tab is left alone. */
+#tab-hermes .status-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 700px) {
+    #tab-hermes .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 400px) {
+    #tab-hermes .status-grid { grid-template-columns: 1fr; }
 }
 
 /* ---- Hermes console: rich live-activity view ---- */

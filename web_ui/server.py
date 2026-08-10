@@ -2521,6 +2521,28 @@ def api_hermes_models() -> dict[str, Any]:
         return {"models": [], "error": f"{type(e).__name__}: {e}"}
 
 
+@app.get("/api/hermes/active-model")
+def api_hermes_active_model() -> dict[str, Any]:
+    """Report the model hermes is actually configured to use right now.
+
+    ``/v1/models`` only advertises a label (the ``API_SERVER_MODEL_NAME``
+    env var, which the dashboard no longer injects, or hermes's
+    ``hermes-agent`` virtual model) — it does NOT reflect the inference
+    model. The real model is whatever ``hermes config get model``
+    resolves to (the user's ``hermes model`` selection), read live and
+    cached briefly inside :meth:`HermesProcess.get_active_model`.
+
+    Used by the LLM tab's read-only ``--model-name`` field and the
+    Hermes tab status line so both display the truth, not the
+    dashboard's stale ``hermes.model_name`` setting.
+
+    Returns ``{"model", "provider", "base_url", "running", "error"}``.
+    """
+    info = state.hermes.get_active_model()
+    info["running"] = state.hermes.is_running()
+    return info
+
+
 @app.post("/api/hermes/chat")
 def api_hermes_chat(body: dict[str, Any]) -> Response:
     """Stream a chat turn to hermes (SSE) for the Hermes tab's console.

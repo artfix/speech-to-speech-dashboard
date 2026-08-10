@@ -651,9 +651,9 @@ function renderField(f, parentTitle) {
     // terminal. The dashboard has no business pretending to control
     // it, so we hide the editable --model-name input and replace it
     // with a read-only label that fetches the active model from
-    // /api/hermes/models. The same label is also shown on the Hermes
-    // tab (this is the single source of truth for the displayed
-    // model when backend === hermes).
+    // /api/hermes/active-model (which reads `hermes config get model`,
+    // not the /v1/models advertised label). The same value is also
+    // shown on the Hermes tab status line.
     //
     // We DO keep the underlying state.settings["--model-name"] value
     // untouched (whatever the user typed before flipping to hermes),
@@ -690,9 +690,10 @@ function renderField(f, parentTitle) {
             hermesLabel,
             hermesHelp,
         ]);
-        // Kick off the fetch and update the label as soon as it lands.
-        // Idempotent: safe to call multiple times during re-renders.
-        _fetchHermesModelInto(hermesLabel);
+        // Render from the model cache (no per-render fetch). The cache
+        // is refreshed once on first paint, on hermes start/stop, and on
+        // a 30 s drift — see _hermesModelEnsure / _hermesModelRefresh.
+        _hermesModelEnsure();
         hermesWrap.classList.toggle('flag-disabled', !isFlagEnabled(f.flag));
         return hermesWrap;
     }
@@ -1200,9 +1201,12 @@ function applyDisabledStates() {
     // --responses-api-num-ctx is Ollama-only too (sent as the Ollama-
     // native extra_body={"options":{"num_ctx":N}}; llama.cpp / vLLM /
     // OpenAI ignore it). Hide the whole .field wrap when the URL isn't
-    // Ollama.
-    const numCtxInput = document.getElementById('f---responses-api-num-ctx');
-    if (numCtxInput) {
+    // Ollama. NOTE: chat-completions subclasses responses-api, so this
+    // field is rendered in BOTH subgroups with the same id —
+    // getElementById would only return the first (the hidden responses-
+    // api copy) and leave the visible chat-completions copy shown, so we
+    // walk every matching element via querySelectorAll.
+    for (const numCtxInput of document.querySelectorAll('#f---responses-api-num-ctx')) {
         const fieldWrap = numCtxInput.closest('.field');
         if (fieldWrap) fieldWrap.style.display = ollamaUrl ? '' : 'none';
     }
@@ -1708,6 +1712,15 @@ function renderLlmRequestTimeoutField() {
 // Auto-unload behavior on num_ctx change is wired in step 9 below
 // (see `_maybeAutoUnloadOnNumCtxChange`).
 function _llmBaseUrlLooksLikeOllama() {
+    // When the Hermes Agent backend type is selected the pipeline is
+    // rerouted through the dashboard's /hermes-proxy/v1 reverse proxy
+    // (talking to the hermes-agent, not Ollama), so none of the
+    // Ollama-only fields — num_ctx, keepalive, load-timeout, lifecycle
+    // section — apply. Bail before the URL heuristic so they stay hidden
+    // even when a stale Ollama base_url lingers in the saved settings
+    // (the hermes autofill only runs on the dropdown's onchange, not on
+    // page load, so the saved :11434 URL would otherwise still match).
+    if (state.settings['--llm-backend-type'] === 'hermes') return false;
     const url = (state.settings['--responses-api-base-url'] || '').toLowerCase();
     return url.includes(':11434') || url.includes('/ollama');
 }
@@ -2108,7 +2121,24 @@ function renderStatusCards() {
     document.getElementById('status-uptime-value').textContent = uptime;
     document.getElementById('status-port-value').textContent = portFromCommand(s.command_line) || '—';
     document.getElementById('status-mode-value').textContent = modeFromCommand(s.command_line) || '—';
-    document.getElementById('status-model-value').textContent = modelFromCommand(s.command_line) || '—';
+    // Model card: under the Hermes backend the pipeline's --model-name
+    // flag is a stale, ignored value — the real model is whatever
+    // hermes has loaded. That value only changes on hermes start/stop
+    // or a terminal `hermes model` swap, so we do NOT poll it every
+    // tick — _hermesModelEnsure() renders from a cache that is refreshed
+    // once on paint, on hermes running-state transitions, and on a 30 s
+    // drift. For every other backend we keep showing the pipeline's
+    // --model-name from its argv (the existing behavior, updated on
+    // pipeline restart).
+    const modelValEl = document.getElementById('status-model-value');
+    const hermesBackend = (state.settings['--llm-backend-type'] || '').toLowerCase() === 'hermes';
+    if (hermesBackend) {
+        modelValEl.dataset.hermes = '1';
+        _hermesModelEnsure();
+    } else {
+        if (modelValEl.dataset.hermes === '1') delete modelValEl.dataset.hermes;
+        modelValEl.textContent = modelFromCommand(s.command_line) || '—';
+    }
     document.getElementById('status-stt-value').textContent = sttFromCommand(s.command_line) || '—';
     document.getElementById('status-tts-value').textContent = ttsFromCommand(s.command_line) || '—';
     document.getElementById('status-log-value').textContent = flagValueFromArgv(s.command_line, '--log-level') || 'info';
@@ -2168,6 +2198,12 @@ function ttsFromCommand(argv) {
     return flagValueFromArgv(argv, '--tts') || '—';
 }
 
+// Fill the Status & Logs "Model" card with the model hermes actually
+// has loaded (from /api/hermes/active-model → `hermes config get`),
+// but only while the card is still flagged for the hermes backend —
+// if the user switched back to a direct backend while the fetch was
+// in flight, leave the synchronously-set value alone. Fire-and-forget;
+// called from renderStatusCards() every 2 s when hermes is selected.
 function renderLogs() {
     const con = $('#log-console');
     if (!con) return;
@@ -2271,11 +2307,20 @@ async function startStatusPoll() {
 async function pollStatus() {
     try {
         const s = await getJSON('/api/process/status');
+        const prevRunning = !!(state.status && state.status.running);
         state.status = s;
         const dot = $('#status-dot');
         const text = $('#status-text');
         dot.classList.toggle('running', s.running);
         text.textContent = s.running ? `running (${formatUptime(s.uptime_s)})` : 'stopped';
+        // When the pipeline starts or stops, refresh the Hermes model
+        // display (the user often restarts the pipeline after a
+        // `hermes model` swap). No-op for non-hermes backends —
+        // _hermesModelApply only touches elements flagged for hermes.
+        if (prevRunning !== !!s.running &&
+            (state.settings['--llm-backend-type'] || '').toLowerCase() === 'hermes') {
+            _hermesModelRefresh();
+        }
         renderStatusCards();
     } catch (e) { /* ignore */ }
 }
@@ -2334,60 +2379,191 @@ async function renderGuideTab(tab) {
         el('h1', { class: 'tab-title' }, 'Guide'),
         el('div', { class: 'tab-subtitle' }, 'How to use the speech-to-speech pipeline.'),
     ]));
+
     const content = el('div', { class: 'guide-content', id: 'guide-content' }, 'Loading...');
-    tab.appendChild(content);
+    let md = '';
     try {
-        const md = await fetch('/api/guide').then(r => r.text());
-        content.innerHTML = renderMarkdown(md);
+        md = await fetch('/api/guide').then(r => r.text());
     } catch (e) {
         content.textContent = 'Failed to load guide: ' + e.message;
+        tab.appendChild(content);
+        return;
     }
+
+    // Split the guide into top-level sections (one per `# Heading`). Each
+    // section becomes a sub-tab; within a section, `## Heading` blocks become
+    // .hermes-panel cards. `---` rules between top sections are dropped.
+    const sections = _guideParseSections(md);
+    if (!sections.length) {
+        content.textContent = 'Guide is empty.';
+        tab.appendChild(content);
+        return;
+    }
+
+    // Sub-tab bar (one pill per top-level section).
+    const bar = el('div', { class: 'guide-subtabs', id: 'guide-subtabs' });
+    tab.appendChild(bar);
+    tab.appendChild(content);
+
+    const show = (idx) => {
+        for (const b of bar.querySelectorAll('.guide-subtab')) b.classList.remove('active');
+        const btn = bar.children[idx];
+        if (btn) btn.classList.add('active');
+        content.innerHTML = _guideRenderSection(sections[idx].body);
+        // Keep the user's scroll anchored to the top of the guide when
+        // switching sub-tabs — otherwise a long section leaves them mid-page.
+        content.scrollIntoView({ block: 'nearest' });
+    };
+
+    sections.forEach((s, i) => {
+        bar.appendChild(el('button', {
+            class: 'guide-subtab' + (i === 0 ? ' active' : ''),
+            onclick: () => show(i),
+        }, s.title));
+    });
+    show(0);
 }
 
-// Minimal markdown renderer. We need headings, lists, inline code, code blocks,
-// and bold/italic. No need for a library -- this is the only Markdown we'll
-// render and a 30-line renderer is enough.
-function renderMarkdown(md) {
-    const lines = md.split('\n');
-    const out = [];
-    let inCode = false, codeBuf = [];
-    let inList = false;
-    const flushList = () => {
-        if (inList) { out.push('</ul>'); inList = false; }
-    };
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.startsWith('```')) {
-            if (inCode) {
-                out.push('<pre><code>' + escapeHTML(codeBuf.join('\n')) + '</code></pre>');
-                inCode = false; codeBuf = [];
-            } else {
-                flushList();
-                inCode = true;
-            }
+// Split markdown into [{title, body}] by top-level `# ` headings. `## `/`### `
+// are NOT top-level — they stay in the body. Pure `---` separator lines are
+// dropped so they don't create stray cards.
+function _guideParseSections(md) {
+    const sections = [];
+    let cur = null;
+    let inCode = false;
+    for (const line of md.split('\n')) {
+        if (line.startsWith('```')) { inCode = !inCode; }
+        if (inCode) {                                   // inside a code fence: verbatim
+            if (cur) cur.body.push(line);
             continue;
         }
-        if (inCode) { codeBuf.push(line); continue; }
-        if (line.startsWith('# ')) { flushList(); out.push('<h1>' + inline(line.slice(2)) + '</h1>'); }
-        else if (line.startsWith('## ')) { flushList(); out.push('<h2>' + inline(line.slice(3)) + '</h2>'); }
-        else if (line.startsWith('### ')) { flushList(); out.push('<h3>' + inline(line.slice(4)) + '</h3>'); }
-        else if (line.match(/^[-*] /)) {
-            if (!inList) { out.push('<ul>'); inList = true; }
-            out.push('<li>' + inline(line.slice(2)) + '</li>');
+        if (/^---\s*$/.test(line)) continue;            // decorative rule
+        if (/^# /.test(line)) {
+            cur = { title: line.slice(2).trim(), body: [] };
+            sections.push(cur);
+        } else if (cur) {
+            cur.body.push(line);
         }
-        else if (line.trim() === '') { flushList(); out.push(''); }
-        else { flushList(); out.push('<p>' + inline(line) + '</p>'); }
     }
-    flushList();
+    // Trim leading/trailing blank lines from each body.
+    for (const s of sections) {
+        while (s.body.length && s.body[0].trim() === '') s.body.shift();
+        while (s.body.length && s.body[s.body.length - 1].trim() === '') s.body.pop();
+    }
+    return sections;
+}
+
+// Render one section's body into HTML: each `## ` block becomes a
+// .hermes-panel card; content before the first `##` becomes a lead-in card.
+function _guideRenderSection(body) {
+    const cards = [];
+    let lead = [];
+    let cur = null;   // {title, lines}
+    const pushCard = (title, lines) => {
+        const inner = _guideRenderBlock(lines);
+        if (!inner && !title) return;
+        const head = title ? `<h3 class="guide-card-title">${_guideInline(title)}</h3>` : '';
+        cards.push(`<div class="hermes-panel guide-card">${head}${inner}</div>`);
+    };
+    for (const line of body) {
+        const m = /^## (.+)$/.exec(line);
+        if (m) {
+            if (cur) pushCard(cur.title, cur.lines);
+            else if (lead.length) pushCard(null, lead);
+            lead = [];
+            cur = { title: m[1].trim(), lines: [] };
+        } else if (cur) {
+            cur.lines.push(line);
+        } else {
+            lead.push(line);
+        }
+    }
+    if (cur) pushCard(cur.title, cur.lines);
+    else if (lead.length) pushCard(null, lead);
+    return cards.join('\n');
+}
+
+// Render an arbitrary block of markdown lines (no top-level `#`/`##`) into
+// HTML. Handles `###`, code fences, blockquotes, GFM tables, bullet lists,
+// paragraphs, and inline formatting.
+function _guideRenderBlock(lines) {
+    const out = [];
+    let i = 0;
+    const isSpecial = (l) =>
+        l.startsWith('### ') || l.startsWith('```') || l.startsWith('> ') ||
+        /^[-*] /.test(l) || (l.trim().startsWith('|') && l.trim().endsWith('|')) ||
+        /^---\s*$/.test(l);
+    while (i < lines.length) {
+        const line = lines[i];
+        if (line.startsWith('### ')) {
+            out.push('<h4>' + _guideInline(line.slice(4)) + '</h4>');
+            i++;
+        } else if (line.startsWith('```')) {
+            const buf = []; i++;
+            while (i < lines.length && !lines[i].startsWith('```')) { buf.push(lines[i]); i++; }
+            i++; // skip closing fence
+            out.push('<pre><code>' + _guideEscape(buf.join('\n')) + '</code></pre>');
+        } else if (line.startsWith('> ')) {
+            const buf = [];
+            while (i < lines.length && lines[i].startsWith('> ')) {
+                buf.push('<p>' + _guideInline(lines[i].slice(2)) + '</p>');
+                i++;
+            }
+            out.push('<blockquote>' + buf.join('') + '</blockquote>');
+        } else if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+            const tbl = [];
+            while (i < lines.length && lines[i].trim().startsWith('|')) { tbl.push(lines[i]); i++; }
+            out.push(_guideRenderTable(tbl));
+        } else if (/^[-*] /.test(line)) {
+            const items = [];
+            while (i < lines.length && /^[-*] /.test(lines[i])) {
+                items.push('<li>' + _guideInline(lines[i].slice(2)) + '</li>');
+                i++;
+            }
+            out.push('<ul>' + items.join('') + '</ul>');
+        } else if (line.trim() === '' || /^---\s*$/.test(line)) {
+            i++; // paragraph break / decorative rule
+        } else {
+            const buf = [_guideInline(line)]; i++;
+            while (i < lines.length && lines[i].trim() !== '' && !isSpecial(lines[i])) {
+                buf.push(_guideInline(lines[i])); i++;
+            }
+            out.push('<p>' + buf.join(' ') + '</p>');
+        }
+    }
     return out.join('\n');
 }
-function inline(s) {
-    return escapeHTML(s)
+
+// Render a GFM table from raw `| ... |` lines (header, optional `|---|` sep, rows).
+function _guideRenderTable(rows) {
+    const parse = (r) => r.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+    const header = parse(rows[0]);
+    let startIdx = 1;
+    if (rows[1] && /^\s*\|?[\s:|-]+\|?\s*$/.test(rows[1]) && rows[1].includes('-')) startIdx = 2;
+    let html = '<div class="guide-table-wrap"><table class="guide-table"><thead><tr>';
+    for (const h of header) html += '<th>' + _guideInline(h) + '</th>';
+    html += '</tr></thead><tbody>';
+    for (let r = startIdx; r < rows.length; r++) {
+        const cells = parse(rows[r]);
+        html += '<tr>';
+        for (let k = 0; k < header.length; k++) {
+            html += '<td>' + (cells[k] !== undefined ? _guideInline(cells[k]) : '') + '</td>';
+        }
+        html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    return html;
+}
+
+function _guideInline(s) {
+    return _guideEscape(s)
         .replace(/`([^`]+)`/g, '<code>$1</code>')
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
 }
-function escapeHTML(s) {
+
+function _guideEscape(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
@@ -2603,33 +2779,74 @@ function renderHermesTab(tab) {
         badge,
     ]));
 
-    // ---- Lifecycle buttons ------------------------------------------
-    const btnStart = el('button', { class: 'btn btn-primary btn-large',
+    // ---- Lifecycle / control buttons --------------------------------
+    // All six controls live as pressable action cards in one grid below,
+    // matching the Status & Logs tab. Start/Stop are the primary pair;
+    // Cancel/Kill/Reset/Open are the secondary/emergency pair.
+    const btnStart = el('button', { class: 'status-action-btn btn-primary',
         onclick: () => hermesStart(btnStart, btnStop) }, '▶ Start');
-    const btnStop  = el('button', { class: 'btn btn-large',
+    const btnStop  = el('button', { class: 'status-action-btn',
         onclick: () => hermesStop() }, '■ Polite Stop');
-    const btnCancel = el('button', { class: 'btn btn-warning btn-large',
+    const btnCancel = el('button', { class: 'status-action-btn',
         onclick: () => hermesCancel() }, '⏸ Cancel');
-    const btnKill  = el('button', { class: 'btn btn-danger btn-large',
+    const btnKill  = el('button', { class: 'status-action-btn btn-danger',
         onclick: () => hermesKillConfirm() }, '✖ Kill Hermes');
-    const btnResetSession = el('button', { class: 'btn btn-large',
+    const btnResetSession = el('button', { class: 'status-action-btn',
         onclick: () => hermesResetSession() }, '↻ Reset session');
     const btnOpen = el('a', {
-        class: 'btn', href: 'http://127.0.0.1:9119',
+        class: 'status-action-btn', href: 'http://127.0.0.1:9119',
         target: '_blank', rel: 'noopener noreferrer',
     }, '↗ Open Hermes Dashboard');
-    tab.appendChild(el('div', { class: 'btn-row' }, [btnStart, btnStop]));
+
+    // ---- Status metric cards (the "dashboard" row) -------------------
+    // Six small cards, same .status-card shape as the Status & Logs tab,
+    // filled from the status + active-model caches by _hermesApplyMetricCards
+    // and _hermesModelApply. The model card replaces the old single-line
+    // "Model: …" readout; the endpoint/uptime/pid/port cards replace the
+    // old badge text, so the badge now just carries the running dot.
+    const _metric = (id, label, value) => el('div', { class: 'status-card', id }, [
+        el('div', { class: 'status-card-label' }, label),
+        el('div', { class: 'status-card-value', id: `${id}-value` }, value),
+    ]);
+    tab.appendChild(el('div', { class: 'status-section-label' }, 'Status'));
+    tab.appendChild(el('div', { class: 'status-grid' }, [
+        _metric('hermes-metric-state', 'State', '—'),
+        _metric('hermes-metric-model', 'Model', '…'),
+        _metric('hermes-metric-endpoint', 'Endpoint', '—'),
+        _metric('hermes-metric-uptime', 'Uptime', '—'),
+        _metric('hermes-metric-pid', 'PID', '—'),
+        _metric('hermes-metric-port', 'Port', '—'),
+    ]));
+    tab.appendChild(el('div', { class: 'text-dim', id: 'hermes-model-hint',
+        style: { fontSize: '12px', maxWidth: '1200px', margin: '0 auto 8px auto', padding: '0 4px' } },
+        'Model is picked inside hermes (`hermes config` / `hermes model`). ' +
+        'The dashboard only shows what hermes reports.'));
+
+    // ---- Controls: pressable action cards ----------------------------
+    // Start/Stop are the primary pair; Cancel/Kill/Reset/Open are the
+    // secondary/emergency pair. Kill always asks for confirmation.
+    tab.appendChild(el('div', { class: 'status-section-label' }, 'Controls'));
+    const _actionCard = (btn) => el('div', { class: 'status-action-card' }, [btn]);
+    tab.appendChild(el('div', { class: 'status-grid' }, [
+        _actionCard(btnStart),
+        _actionCard(btnStop),
+        _actionCard(btnCancel),
+        _actionCard(btnResetSession),
+        _actionCard(btnOpen),
+        _actionCard(btnKill),
+    ]));
+    tab.appendChild(el('div', { class: 'text-dim', style: {
+        fontSize: '12px', maxWidth: '1200px', margin: '-4px auto 8px auto', padding: '0 4px'
+    } },
+        'Cancel stops the current run cleanly (context preserved). ' +
+        'Kill forces SIGKILL (context lost). Kill always asks for confirmation.'));
 
     // ---- Hermes api_server endpoint ----------------------------------
-    // These three values control where the dashboard's reverse proxy
-    // (and therefore the pipeline's LLM slot) talks to hermes-agent.
-    // They are NOT the upstream LLM that hermes uses internally; that is
-    // configured via `hermes config` in your terminal.
-    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Hermes endpoint'));
-    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '12px', maxWidth: '720px' } },
-        'Host, port, and advertised model for the hermes api_server. ' +
-        'The pipeline connects here via the Hermes Agent toggle in the LLM tab. ' +
-        'The real LLM that hermes talks to is set via `hermes config` in your terminal.'));
+    // Host & port control where the dashboard's reverse proxy (and
+    // therefore the pipeline's LLM slot) talks to hermes-agent. They are
+    // NOT the upstream LLM hermes uses internally; that is configured via
+    // `hermes config` in your terminal.
+    tab.appendChild(el('div', { class: 'status-section-label' }, 'Hermes endpoint'));
 
     // Ensure state.settings.hermes is an object so the form has
     // somewhere to write. Mirrors how state.settings.env is treated
@@ -2659,7 +2876,7 @@ function renderHermesTab(tab) {
 
     const hostInput = el('input', {
         type: 'text', id: 'hermes-host', class: 'field-input',
-        style: { width: '160px' },
+        style: { width: '100%' },
         oninput: (e) => _setHermesVal('host', e.target.value),
         onblur: () => _persistHermesConfig(),
     });
@@ -2667,7 +2884,7 @@ function renderHermesTab(tab) {
 
     const portInput = el('input', {
         type: 'number', id: 'hermes-port', class: 'field-input',
-        min: '1', max: '65535', step: '1', style: { width: '100px' },
+        min: '1', max: '65535', step: '1', style: { width: '100%' },
         oninput: (e) => _setHermesVal('port', parseInt(e.target.value, 10) || 8642),
         onblur: () => _persistHermesConfig(),
     });
@@ -2694,35 +2911,32 @@ function renderHermesTab(tab) {
         ]);
     };
 
-    tab.appendChild(_hermesField(
-        'api_server host',
-        hostInput,
-        'Bind address for the hermes api_server. Default 127.0.0.1 keeps it on loopback. ' +
-        'Change only if you run hermes on a different machine and have network routing in place.'
-    ));
-    tab.appendChild(_hermesField(
-        'api_server port',
-        portInput,
-        'TCP port for the hermes api_server. Default 8642. The pipeline connects through ' +
-        'the dashboard reverse proxy, so this port only needs to be reachable from the dashboard.'
-    ));
-
-    // Read-only status line: actual running model + endpoint.
-    // The model is whatever hermes reports on /v1/models; the user picks
-    // it via `hermes config` / `hermes model` in their terminal, not here.
-    const modelLine = el('div', { class: 'text-dim', id: 'hermes-model-line' },
-        'Model: (start hermes to see)');
-    tab.appendChild(modelLine);
-    const modelHint = el('div', { class: 'text-dim', id: 'hermes-model-hint',
-        style: { fontSize: '12px', marginTop: '4px' } },
-        'Model is picked inside hermes (`hermes config` / `hermes model`). ' +
-        'The dashboard only shows what hermes reports.');
-    tab.appendChild(modelHint);
+    tab.appendChild(el('div', { class: 'hermes-panel' }, [
+        el('div', { class: 'text-dim', style: { fontSize: '12px' } },
+            'The pipeline connects here through the dashboard reverse proxy, ' +
+            'so this port only needs to be reachable from the dashboard.'),
+        el('div', { class: 'hermes-grid-2' }, [
+            _hermesField(
+                'api_server host',
+                hostInput,
+                'Bind address for the hermes api_server. Default 127.0.0.1 keeps it on loopback. ' +
+                'Change only if you run hermes on a different machine and have network routing in place.'
+            ),
+            _hermesField(
+                'api_server port',
+                portInput,
+                'TCP port for the hermes api_server. Default 8642. The pipeline connects through ' +
+                'the dashboard reverse proxy, so this port only needs to be reachable from the dashboard.'
+            ),
+        ]),
+    ]));
 
     // ---- Hermes stderr verbosity knob --------------------------------
+    // Defined here, appended below inside the Tuning panel next to the
+    // LLM read timeout so the two knobs sit side by side in one card.
     const logLevelSelect = el('select', {
         id: 'hermes-log-level', class: 'field-select',
-        style: { width: '160px' },
+        style: { width: '100%' },
         onchange: (e) => {
             _setHermesVal('log_level', e.target.value);
             _persistHermesConfig();
@@ -2733,18 +2947,14 @@ function renderHermesTab(tab) {
         el('option', { value: 'debug' }, 'debug (-vv)'),
     ]);
     logLevelSelect.value = _hermesVal('log_level', 'verbose');
-    tab.appendChild(_hermesField(
+    const verbosityField = _hermesField(
         'stderr verbosity',
         logLevelSelect,
         'How chatty hermes is on its stderr stream. Verbose sends INFO ' +
         'logs to the dashboard log panel; debug sends DEBUG. The dashboard ' +
         'always tails ~/.hermes/logs/agent.log regardless. Change requires ' +
         'Stop + Start to take effect.'
-    ));
-    tab.appendChild(el('div', { class: 'text-dim', style: {
-        fontSize: '12px', marginTop: '-8px', marginBottom: '12px', maxWidth: '720px'
-    } },
-        'Restart hermes after changing this for it to take effect.'));
+    );
 
     // ---- LLM read timeout knob (Hermes-only) --------------------------
     // The pipeline hardcodes a 20 s read timeout for every chat /
@@ -2765,7 +2975,7 @@ function renderHermesTab(tab) {
     // 0 = no read timeout at all (httpx.Timeout(None)); the pipeline
     //     waits forever for the LLM to close the stream.
     // >0 = read timeout in seconds (httpx.Timeout(N)).
-    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'LLM read timeout'));
+    tab.appendChild(el('div', { class: 'status-section-label' }, 'Tuning'));
     const timeoutHover =
         'Max seconds the pipeline waits for the LLM (hermes) to send ' +
         'its response before giving up and playing the canned fallback ' +
@@ -2819,17 +3029,26 @@ function renderHermesTab(tab) {
     const timeoutNote = el('div', { class: 'text-dim', style: { marginTop: '4px', fontSize: '12px' } },
         '0 = wait forever (infinite). Increase only if you want hermes ' +
         'to give up faster on long-running prompts.');
-    tab.appendChild(el('div', { class: 'field' }, [
+    const timeoutField = el('div', { class: 'field' }, [
         timeoutLabel,
         timeoutInput,
         timeoutHelp,
         timeoutNote,
+    ]);
+    tab.appendChild(el('div', { class: 'hermes-panel' }, [
+        el('div', { class: 'hermes-grid-2' }, [
+            verbosityField,
+            timeoutField,
+        ]),
+        el('div', { class: 'text-dim', style: { fontSize: '12px' } },
+            'Restart hermes after changing stderr verbosity for it to take effect.'),
     ]));
 
     // ---- Filler audio config ----------------------------------------
     if (HERMES_FILLER_UI_ENABLED) {
-    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Filler audio'));
-    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px', maxWidth: '720px' } },
+    tab.appendChild(el('div', { class: 'status-section-label' }, 'Filler audio'));
+    const fillerPanel = el('div', { class: 'hermes-panel' });
+    fillerPanel.appendChild(el('div', { class: 'text-dim', style: { fontSize: '12px' } },
         'Plays a short phrase from this list while hermes is mid-tool-call ' +
         '(>1.5s without text), so the user knows the agent is still working. ' +
         'Uses the pipeline\'s TTS — no extra config. One phrase is picked at random.'));
@@ -2855,7 +3074,7 @@ function renderHermesTab(tab) {
             hermesFillerSave({ delay_ms: v });
         },
     });
-    tab.appendChild(el('div', { class: 'field', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap' } }, [
+    fillerPanel.appendChild(el('div', { class: 'field', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap' } }, [
         fillerToggle,
         el('label', { for: 'hermes-filler-enabled', style: { marginLeft: '8px' } },
             ' Enable filler phrases'),
@@ -2866,7 +3085,7 @@ function renderHermesTab(tab) {
 
     const MAX_FILLER_PHRASES = 20;
     const fillerContainer = el('div', { id: 'hermes-filler-container', style: { maxWidth: '720px' } });
-    tab.appendChild(fillerContainer);
+    fillerPanel.appendChild(fillerContainer);
 
     function _getFillerPhrases() {
         const container = document.getElementById('hermes-filler-container');
@@ -2962,21 +3181,23 @@ function renderHermesTab(tab) {
 
     // Populate the phrase boxes from saved settings on first paint.
     _renderFillerBoxes(state.settings.hermes.filler_phrases || []);
+    tab.appendChild(fillerPanel);
     }  // end if (HERMES_FILLER_UI_ENABLED)
 
     // ---- Console (text chat with hermes) ----------------------------
-    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Console'));
-    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px' } },
+    tab.appendChild(el('div', { class: 'status-section-label' }, 'Console'));
+    const consolePanel = el('div', { class: 'hermes-panel' });
+    consolePanel.appendChild(el('div', { class: 'text-dim', style: { fontSize: '12px' } },
         'Text chat with hermes on the SAME session as the voice pipeline — ' +
         'hermes remembers what was said by voice, and you can paste URLs or ' +
         'long text here that STT would mangle. Shows live activity: reasoning, ' +
         'tool calls, and the turn transcript (for debugging).'));
     const consoleBox = el('div', { id: 'hermes-console', class: 'log-console',
-        style: { height: '360px', maxWidth: '720px' } });
-    tab.appendChild(consoleBox);
+        style: { height: '360px' } });
     // Replay persisted turn nodes (survive tab switches). In-flight turns
     // keep updating — the handler holds the live node reference.
     for (const t of state.hermesTurns) consoleBox.appendChild(t);
+    consolePanel.appendChild(consoleBox);
     const chatInput = el('input', {
         type: 'text', class: 'field-input', id: 'hermes-chat-input',
         placeholder: 'Type a message for hermes…', style: { width: '60%', maxWidth: '500px' },
@@ -2986,19 +3207,24 @@ function renderHermesTab(tab) {
         'Send');
     const chatAbort = el('button', { class: 'btn', onclick: () => hermesAbortChat() },
         'Stop');
-    tab.appendChild(el('div', { class: 'btn-row', style: { marginTop: '8px' } },
+    consolePanel.appendChild(el('div', { class: 'btn-row', style: { marginTop: '8px' } },
         [chatInput, chatSend, chatAbort]));
+    tab.appendChild(consolePanel);
 
     // ---- Logs (filtered to source === "hermes") ----------------------
-    tab.appendChild(el('h3', { style: { marginTop: '24px' } }, 'Logs'));
-    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px' } },
+    // The Cancel / Kill / Reset / Open controls used to live in a separate
+    // "Emergency" section at the bottom; they are now pressable action
+    // cards in the Controls grid up top, so there is no emergency row here.
+    tab.appendChild(el('div', { class: 'status-section-label' }, 'Logs'));
+    const logsPanel = el('div', { class: 'hermes-panel' });
+    logsPanel.appendChild(el('div', { class: 'text-dim', style: { fontSize: '12px' } },
         'Live hermes subprocess logs. The shared /ws/logs websocket ' +
         'already tags each line with `source: "hermes"` or "pipeline"; ' +
         'we filter to hermes here. The full pipeline log is still ' +
         'on the Status & Logs tab.'));
     const hermesLogBox = el('div', { id: 'hermes-log-box', class: 'log-console',
         style: { height: '460px', maxWidth: 'none', width: '100%', overflow: 'auto' } });
-    tab.appendChild(hermesLogBox);
+    logsPanel.appendChild(hermesLogBox);
     const hermesLogFilter = el('select', {
         class: 'field-select', id: 'hermes-log-filter',
         onchange: () => _hermesRenderLogs(),
@@ -3006,95 +3232,70 @@ function renderHermesTab(tab) {
     for (const v of ['ALL', 'INFO', 'WARNING', 'ERROR', 'DEBUG']) {
         hermesLogFilter.appendChild(el('option', { value: v }, v));
     }
-    tab.appendChild(el('div', { class: 'btn-row' }, [
+    logsPanel.appendChild(el('div', { class: 'btn-row' }, [
         el('span', { class: 'text-dim' }, 'Filter:'),
         hermesLogFilter,
         el('button', { class: 'btn', onclick: () => {
             _hermesLogBuffer = []; _hermesRenderLogs();
         } }, 'Clear'),
     ]));
-
-    // ---- Emergency --------------------------------------------------
-    tab.appendChild(el('h3', { style: { marginTop: '24px', color: 'var(--danger, #d33)' } },
-        'Emergency'));
-    tab.appendChild(el('div', { class: 'text-dim', style: { marginBottom: '8px' } },
-        'Cancel stops the current hermes run cleanly (context preserved). ' +
-        'Kill forces SIGKILL on the subprocess (context lost, fresh start). ' +
-        'Kill requires a confirmation prompt — it is never auto-triggered.'));
-    tab.appendChild(el('div', { class: 'btn-row' }, [btnCancel, btnKill, btnResetSession, btnOpen]));
+    tab.appendChild(logsPanel);
 
     // ---- Initial paint + ongoing poll -------------------------------
     _hermesRefetchLogs();
     _hermesRefreshStatus();
-    if (!_hermesPollTimer) _hermesPollTimer = setInterval(_hermesTick, 2000);
+    // Badge + logs tick every 5 s (the live "is hermes up?" indicator).
+    // The model itself is NOT polled here — it is event-driven via
+    // _hermesModelEnsure / _hermesModelRefresh (paint + start/stop
+    // transition + 30 s drift).
+    if (!_hermesPollTimer) _hermesPollTimer = setInterval(_hermesTick, 5000);
 }
 
 let _hermesPollTimer = null;
 async function _hermesTick() {
-    // Only poll if the tab is currently visible — saves a fetch on
-    // every other tab the user is on.
+    // Only poll if the Hermes tab is visible — the badge + logs panel
+    // live there. The model card/label on other tabs are updated
+    // separately (event-driven), not on this tick.
     const tab = document.getElementById('tab-hermes');
     if (tab && tab.classList.contains('active')) {
         await Promise.all([_hermesRefreshStatus(), _hermesRefetchLogs()]);
-    }
-    // If the LLM tab is active AND --llm-backend-type === 'hermes',
-    // refresh the read-only model label so `hermes model` changes in
-    // the user's terminal show up within a few seconds. Cheap (one
-    // fetch, only when both conditions hold).
-    const llmTab = document.getElementById('tab-llm');
-    if (llmTab && llmTab.classList.contains('active')) {
-        const labels = document.querySelectorAll('#tab-llm .field-readonly-model');
-        if (labels.length > 0) {
-            // Each --model-name subgroup has its own read-only label;
-            // refresh them all.
-            for (const lab of labels) {
-                _fetchHermesModelInto(lab);
-            }
-        }
     }
 }
 
 async function _hermesRefreshStatus() {
     let s = {};
     try { s = await getJSON('/api/hermes/status'); } catch (e) { /* offline */ }
+    _hermesLastStatus = s || {};
+    const running = !!s.running;
+    // Re-fetch the model only when hermes starts or stops (a rare
+    // transition). Skip on the very first tick — the paint already
+    // triggered a fetch via _hermesModelEnsure().
+    if (_hermesActiveRunningSeen && running !== _hermesActiveRunningPrev) {
+        _hermesModelRefresh();
+    }
+    _hermesActiveRunningPrev = running;
+    _hermesActiveRunningSeen = true;
     const badge = document.getElementById('hermes-status-badge');
     if (badge) {
         badge.textContent = '';
         badge.className = 'hermes-badge ' +
             (s.running ? (s.ready ? 'running' : 'starting') : 'stopped');
         badge.appendChild(el('span', { class: 'hermes-badge-dot' }, ''));
+        // The badge is the pure up/down indicator; port + uptime live in the
+        // Status metric cards now, so we keep the badge text minimal.
         const txt = s.running
-            ? `${s.ready ? '● running' : '◐ starting'} :${s.port}` +
-              (s.uptime_s ? `  (${formatUptime(s.uptime_s)})` : '')
+            ? (s.ready ? '● running' : '◐ starting')
             : '○ stopped';
         badge.appendChild(el('span', {}, txt));
     }
-    // The model line is read-only: it shows whatever hermes reports,
-    // not whatever the dashboard's --model-name field claims. The
-    // user changes the model via `hermes model` in the terminal; the
-    // dashboard has no business pretending to control it.
-    //
-    // /api/hermes/status returns `model_name` from
-    // HermesProcess._status() which already queries /v1/models, so
-    // we use it as the primary source. /api/hermes/models is a
-    // secondary signal — if status didn't report a model but
-    // /v1/models does, prefer that (rare but possible during
-    // model swap).
-    let modelName = s.running ? (s.model_name || '') : '';
-    try {
-        const r = await getJSON('/api/hermes/models');
-        if (r && r.models && r.models.length === 1 && !modelName) {
-            modelName = r.models[0].id;
-        }
-    } catch (e) { /* offline — keep the status-derived value */ }
-    const modelLine = document.getElementById('hermes-model-line');
-    if (modelLine) {
-        modelLine.textContent = s.running
-            ? `Model: ${modelName || '(unknown)'}    Endpoint: http://${s.host}:${s.port}/v1`
-            : 'Model: (start hermes to load)';
-    }
+    // Fill the Status metric cards (State / Endpoint / Uptime / PID / Port)
+    // from this status tick. The Model card is filled separately by
+    // _hermesModelApply (the model is read from `hermes config get` via the
+    // active-model cache, refreshed on paint / start-stop / 30 s drift).
+    _hermesApplyMetricCards();
+    _hermesModelEnsure();
     // Refresh filler enabled toggle + delay once on first paint. We do not
-    // re-render the per-phrase boxes here because the 2 s poll would
+    // re-render the per-phrase boxes here because the poll would
     // overwrite whatever the user is currently typing.
     const fillerToggle = document.getElementById('hermes-filler-enabled');
     const fillerDelayInput = document.getElementById('hermes-filler-delay');
@@ -3143,13 +3344,17 @@ function _hermesRenderLogs() {
     if (!box) return;
     const filterEl = document.getElementById('hermes-log-filter');
     const filter = filterEl ? filterEl.value : 'ALL';
+    // Respect the reader: only stick to the bottom if they're already near
+    // it. If they scrolled up to read older lines, a new line arriving must
+    // NOT yank them back down — so we leave the scroll position alone.
+    const stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
     box.textContent = '';
     for (const l of _hermesLogBuffer) {
         if (filter !== 'ALL' && l.level !== filter) continue;
         const row = el('div', { class: 'log-row' }, `[${l.level || 'INFO'}] ${l.text}`);
         box.appendChild(row);
     }
-    box.scrollTop = box.scrollHeight;
+    if (stickToBottom) box.scrollTop = box.scrollHeight;
 }
 
 // Wire the shared /ws/logs websocket to also feed the hermes log
@@ -3184,29 +3389,118 @@ function _hermesSubscribeLogStream() {
 }
 _hermesSubscribeLogStream();
 
-// One-shot helper to fill a `Model: …` label with whatever hermes
-// currently reports. Used by the LLM tab's read-only --model-name
-// field when --llm-backend-type === 'hermes'. Cheap (3-second
-// timeout, one fetch per render). If the user hasn't started hermes
-// yet, the label stays as "(start hermes to load)" until they do.
-async function _fetchHermesModelInto(labelEl) {
-    if (!labelEl) return;
-    let status = {};
-    try { status = await getJSON('/api/hermes/status'); } catch (e) { /* offline */ }
-    if (!status.running) {
-        labelEl.textContent = '(start hermes to load)';
-        return;
+// ---- Hermes active model: event-driven, not polled every tick ----------
+// The model hermes has loaded only changes on (a) hermes start/restart,
+// or (b) the user running `hermes model` in a terminal. So we do NOT
+// fetch it on every 2-5 s tick. Instead:
+//   - one fetch on first paint (via _hermesModelEnsure, which also
+//     starts a 30 s drift timer to catch terminal `hermes model` swaps),
+//   - a re-fetch when hermes' running state flips (start/stop), detected
+//     in _hermesRefreshStatus,
+//   - a 30 s drift poll while the hermes backend is selected.
+// One fetch updates every place that shows the model: the LLM tab
+// --model-name read-only field, the Hermes tab status line, and the
+// Status & Logs model card. The endpoint is cached ~5 s server-side.
+let _hermesActiveModel = null;        // last /api/hermes/active-model result
+let _hermesLastStatus = { running: false };  // last /api/hermes/status (for the line)
+let _hermesActiveRunningPrev = null;  // for start/stop transition detection
+let _hermesActiveRunningSeen = false;
+let _hermesModelFetching = false;     // guard against duplicate concurrent fetches
+let _hermesModelDriftTimer = null;
+
+async function _hermesModelRefresh() {
+    if (_hermesModelFetching) return;
+    _hermesModelFetching = true;
+    try {
+        const a = await getJSON('/api/hermes/active-model');
+        _hermesActiveModel = a || { model: null, provider: null, base_url: null, error: 'empty', running: false };
+    } catch (e) {
+        // On the first ever fetch, record an "offline" sentinel so
+        // _hermesModelEnsure doesn't re-fetch on every paint; the 30 s
+        // drift / a start-stop transition will retry. On later fetches,
+        // keep the last good cache.
+        if (_hermesActiveModel === null) {
+            _hermesActiveModel = { model: null, provider: null, base_url: null, error: 'offline', running: false };
+        }
     }
-    let modelName = status.model_name || '';
-    // Fall back to /api/hermes/models when status didn't report a
-    // model (rare but possible mid-model-swap).
-    if (!modelName) {
-        try {
-            const r = await getJSON('/api/hermes/models');
-            if (r && r.models && r.models.length === 1) modelName = r.models[0].id;
-        } catch (e) { /* keep empty */ }
+    _hermesModelFetching = false;
+    _hermesModelApply();
+}
+
+function _ensureHermesModelDrift() {
+    if (_hermesModelDriftTimer) return;
+    _hermesModelDriftTimer = setInterval(() => {
+        if ((state.settings['--llm-backend-type'] || '').toLowerCase() !== 'hermes') return;
+        _hermesModelRefresh();
+    }, 30000);
+}
+
+// Render from cache (and trigger a fetch if we have no cache yet).
+// Safe to call on every paint/tick — it only fetches when the cache is
+// still null and no fetch is in flight.
+function _hermesModelEnsure() {
+    _ensureHermesModelDrift();
+    if (_hermesActiveModel === null && !_hermesModelFetching) _hermesModelRefresh();
+    _hermesModelApply();
+}
+
+function _hermesModelLabelText() {
+    const a = _hermesActiveModel;
+    if (!a) return '…';
+    if (!a.model) return a.error ? '(unavailable)' : '(unknown)';
+    return a.provider ? `${a.model} (${a.provider})` : a.model;
+}
+
+function _hermesModelApply() {
+    const a = _hermesActiveModel;
+    const running = !!(_hermesLastStatus && _hermesLastStatus.running);
+    const label = _hermesModelLabelText();
+    // LLM tab --model-name read-only labels (one per backend subgroup).
+    for (const lab of document.querySelectorAll('#tab-llm .field-readonly-model')) {
+        if (!a) { lab.textContent = '…'; continue; }
+        lab.textContent = running
+            ? `Model: ${label}`
+            : (a.model ? `Model: ${label} (not running)` : '(start hermes to load)');
     }
-    labelEl.textContent = modelName ? `Model: ${modelName}` : '(unknown)';
+    // Hermes tab Model metric card. The endpoint/uptime/pid/port cards are
+    // filled by _hermesApplyMetricCards from the status tick; only the model
+    // value comes from the active-model cache here.
+    const hermesModelCard = document.getElementById('hermes-metric-model-value');
+    if (hermesModelCard) {
+        hermesModelCard.textContent = a ? label : '…';
+    }
+    // Status & Logs model card (only while flagged for the hermes backend).
+    const card = document.getElementById('status-model-value');
+    if (card && card.dataset.hermes === '1') {
+        card.textContent = a ? label : '…';
+    }
+}
+
+// Fill the Hermes tab Status metric cards (State / Endpoint / Uptime / PID /
+// Port) from the last status tick. The Model card is owned by
+// _hermesModelApply. Safe to call when the Hermes tab isn't mounted — every
+// lookup is guarded.
+function _hermesApplyMetricCards() {
+    const s = _hermesLastStatus || {};
+    const running = !!s.running;
+    const stateEl = document.getElementById('hermes-metric-state-value');
+    if (stateEl) {
+        stateEl.textContent = running ? (s.ready ? 'RUNNING' : 'STARTING') : 'STOPPED';
+        stateEl.style.color = running ? 'var(--success, #4ade80)' : '';
+    }
+    const epEl = document.getElementById('hermes-metric-endpoint-value');
+    if (epEl) {
+        epEl.textContent = running
+            ? `http://${s.host || '127.0.0.1'}:${s.port || 8642}/v1` : '—';
+    }
+    const upEl = document.getElementById('hermes-metric-uptime-value');
+    if (upEl) {
+        upEl.textContent = (running && s.uptime_s) ? formatUptime(s.uptime_s) : '—';
+    }
+    const pidEl = document.getElementById('hermes-metric-pid-value');
+    if (pidEl) pidEl.textContent = s.pid || '—';
+    const portEl = document.getElementById('hermes-metric-port-value');
+    if (portEl) portEl.textContent = s.port || '—';
 }
 
 async function hermesFillerSave(patch) {

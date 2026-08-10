@@ -572,61 +572,6 @@ Assistant control); the dashboard's existing pipeline stays the body
 and voice. You can still swap STT/TTS/VAD freely — only the LLM slot
 changes.
 
-## 0.5.0 (this version)
-
-- **Parakeet ONNX STT backend** (`--stt parakeet-onnx`). Three NVIDIA
-  Parakeet TDT variants via `onnx-asr` (pure ONNX, no PyTorch needed
-  for STT): `v2` (English-only), `v3` (multilingual 25 EU langs,
-  default), `v3sq` (int8 SmoothQuant rebuild, best for long audio).
-  Exposes `--parakeet-onnx-variant`, `--parakeet-onnx-num-threads`,
-  and `--parakeet-onnx-language` (dropdown: `auto` + 25 EU languages,
-  greyed out and locked to `en` when v2 is selected). CPU / CUDA only —
-  Apple Silicon users keep `parakeet-tdt`. Final-only transcription
-  (no live / progressive updates — `onnx-asr` exposes no streaming
-  API). Install with `uv pip install "speech-to-speech[parakeet-onnx]"`.
-  See the "Parakeet ONNX" section under "STT" above.
-
-## 0.4.3
-
-- **Ollama model lifecycle section** at the bottom of the LLM tab
-  (visible only when the LLM URL looks like Ollama). Shows live model
-  name + endpoint + current context from `ollama ps` (polled every
-  2s), plus a **🔄 Unload & reload Ollama model** button that
-  forces the model to reload at the user's chosen `--responses-api-num-ctx`.
-  Fixes the "num_ctx doesn't stick" bug where Ollama ignores
-  `num_ctx` on requests for a model already resident in its KV cache.
-  Also auto-unloads silently when `--responses-api-num-ctx` changes
-  if Ollama is currently holding the model at a different context.
-  See the "Ollama model lifecycle" section below.
-
-## 0.4.2
-
-- **Per-backend LLM request timeout (s)** dropdown on the LLM tab
-  (under `--ollama-load-timeout-seconds`). Overrides the pipeline's
-  hardcoded 20 s openai-SDK read timeout so the first reply after a
-  cold model load isn't cut off ("Wow I'm a bit slow today...").
-  Presets: 0 (no timeout), 30, 60, 120, 300, 600 + Custom. Stored per
-  backend so switching from Hermes (0) to Ollama (120 s) keeps each
-  backend's tuned value. Default for `responses-api` stays at 20 s
-  (hosted OpenAI fast first-byte). See the "LLM request timeout"
-  section below for details.
-
-## 0.4.0
-
-- **Hermes tab** in the sidebar: start, polite-stop, cancel, kill, plus
-  a text console and a filler-phrase config (10-line box).
-- **LLM tab → "Backend type"** dropdown: pick *Hermes Agent* and the
-  dashboard auto-fills the LLM URL with the dashboard's reverse-proxy
-  base URL (`http://<dashboard-host>:8050/hermes-proxy/v1`) and the
-  api_key from the Hermes tab.
-- **Reverse proxy** lives inside the dashboard's own uvicorn — no
-  extra port, no extra process, no extra dependency. Resource cost is
-  negligible: it forwards bytes + injects two headers
-  (`Authorization`, `X-Hermes-Session-Id`).
-- **Session id** is one per pipeline lifetime. New uuid on pipeline
-  start / restart / kill. Polite stop and cancel preserve the id so
-  the conversation continues on the next start.
-
 ## First-time setup
 
 1. Install hermes-agent and pick a model inside hermes (the model is
@@ -668,23 +613,26 @@ id is held in a slot — no allocation per request.
 ## Common Hermes tasks
 
 - **Reset the conversation without killing hermes:** click
-  **↻ Reset session** in the Emergency section of the Hermes tab.
+  **↻ Reset session** in the Controls row of the Hermes tab.
   Mints a new session id; hermes treats the next request as a fresh
   conversation. Faster than kill+start, no subprocess churn.
 - **Stop a long-running tool mid-flight:** click **⏸ Cancel**. Sends
   `/v1/runs/stop` to hermes. The session id stays; you can resume.
 - **Hard kill (last resort):** click **✖ Kill Hermes**, confirm.
-  Herme context lost; pipeline id resets automatically.
+  Hermes context lost; pipeline id resets automatically.
 - **Open hermes's own dashboard:** the **↗ Open Hermes Dashboard**
-  link points at the upstream web UI on port 9119.
+  card points at the upstream web UI on port 9119.
 
 ## Filler audio
 
 When hermes is mid-tool-call (>1.5s without producing text), the
 robot can play a short phrase so the user knows it's still working.
-Uses the pipeline's existing TTS — no extra config. Edit the
-10-line box on the Hermes tab, or toggle the checkbox off if you
-don't want it.
+Uses the pipeline's existing TTS — no extra config. In the **Filler
+audio** panel on the Hermes tab: toggle the **Enable filler phrases**
+checkbox, set the **Delay (ms)** before a phrase fires, and edit the
+phrase list (type a phrase into the empty slot and it saves on blur /
+Enter; click **✕** on a phrase to delete it; **+ Add phrase** to add
+another slot). Toggle the checkbox off if you don't want it.
 
 ## Out of scope (deferred)
 
@@ -695,3 +643,95 @@ don't want it.
   currently expose a documented `compress_context` tool (verified
   2026-07). When upstream ships one, swap the *Reset session*
   endpoint to call it instead of (or in addition to) the id rotation.
+
+---
+
+# What's new
+
+A running changelog of dashboard-level changes (the pipeline's own
+version in `src/speech_to_speech/__init__.py` is upstream's number and
+is not touched by these). Newest first.
+
+## 0.5.9 (current)
+
+- **Hermes tab redesigned into a card dashboard**, matching the Status &
+  Logs tab. A **Status** row of metric cards (State, Model, Endpoint,
+  Uptime, PID, Port) sits at the top; a **Controls** row of pressable
+  action cards (Start, Polite Stop, Cancel, Reset session, Open Hermes
+  Dashboard, Kill) replaces the old Start/Stop button row plus the
+  bottom Emergency section. Below them: an **Endpoint** panel (host &
+  port side by side), a **Tuning** panel (stderr verbosity + LLM read
+  timeout side by side), a **Filler audio** panel, a **Console** panel,
+  and a **Logs** panel. The badge is now a pure up/down indicator (port
+  and uptime moved into the Status cards).
+- **The Hermes Model card shows the model hermes actually has loaded**
+  (read from `hermes config get`, e.g. `minimax-m3 (ollama-cloud)`), not
+  the stale dashboard `--model-name` setting. The same value drives the
+  LLM tab's `--model-name` read-only field and the Status & Logs model
+  card while the Hermes backend is selected. It is fetched once on
+  paint, re-fetched on hermes start/stop, and on a 30 s drift timer to
+  catch terminal `hermes model` swaps — it is **not** polled every tick.
+- **`--responses-api-num-ctx` is hidden in the LLM tab when the Hermes
+  backend is selected** — that flag is Ollama-native and ignored by the
+  hermes proxy, so showing it under Hermes was misleading.
+- **The Hermes Logs panel respects your scroll position.** Scroll up to
+  read older lines and newly arriving lines no longer yank you back to
+  the bottom; scroll back to the bottom to resume auto-follow.
+- **Guide tab redesigned** into sub-tabs (one per top-level section) with
+  each section laid out as cards, real GFM tables, and callout blocks.
+
+## 0.5.0
+
+- **Parakeet ONNX STT backend** (`--stt parakeet-onnx`). Three NVIDIA
+  Parakeet TDT variants via `onnx-asr` (pure ONNX, no PyTorch needed
+  for STT): `v2` (English-only), `v3` (multilingual 25 EU langs,
+  default), `v3sq` (int8 SmoothQuant rebuild, best for long audio).
+  Exposes `--parakeet-onnx-variant`, `--parakeet-onnx-num-threads`,
+  and `--parakeet-onnx-language` (dropdown: `auto` + 25 EU languages,
+  greyed out and locked to `en` when v2 is selected). CPU / CUDA only —
+  Apple Silicon users keep `parakeet-tdt`. Final-only transcription
+  (no live / progressive updates — `onnx-asr` exposes no streaming
+  API). Install with `uv pip install "speech-to-speech[parakeet-onnx]"`.
+  See the "Parakeet ONNX" section under "What each backend does".
+
+## 0.4.3
+
+- **Ollama model lifecycle section** at the bottom of the LLM tab
+  (visible only when the LLM URL looks like Ollama). Shows live model
+  name + endpoint + current context from `ollama ps` (polled every
+  2s), plus a **🔄 Unload & reload Ollama model** button that
+  forces the model to reload at the user's chosen `--responses-api-num-ctx`.
+  Fixes the "num_ctx doesn't stick" bug where Ollama ignores
+  `num_ctx` on requests for a model already resident in its KV cache.
+  Also auto-unloads silently when `--responses-api-num-ctx` changes
+  if Ollama is currently holding the model at a different context.
+  See the "Ollama model lifecycle: num_ctx doesn't always stick"
+  section under Common issues.
+
+## 0.4.2
+
+- **Per-backend LLM request timeout (s)** dropdown on the LLM tab
+  (under `--ollama-load-timeout-seconds`). Overrides the pipeline's
+  hardcoded 20 s openai-SDK read timeout so the first reply after a
+  cold model load isn't cut off ("Wow I'm a bit slow today...").
+  Presets: 0 (no timeout), 30, 60, 120, 300, 600 + Custom. Stored per
+  backend so switching from Hermes (0) to Ollama (120 s) keeps each
+  backend's tuned value. Default for `responses-api` stays at 20 s
+  (hosted OpenAI fast first-byte). See the "LLM request timeout"
+  section under Common issues for details.
+
+## 0.4.0
+
+- **Hermes Agent integration.** A new **Hermes** tab in the sidebar
+  (start, polite-stop, cancel, kill, text console, filler-phrase
+  config) plus an **LLM tab → "Backend type"** dropdown: pick *Hermes
+  Agent* and the dashboard auto-fills the LLM URL with the dashboard's
+  reverse-proxy base URL (`http://<dashboard-host>:8050/hermes-proxy/v1`)
+  and the api_key from the Hermes tab.
+- **Reverse proxy** lives inside the dashboard's own uvicorn — no
+  extra port, no extra process, no extra dependency. Resource cost is
+  negligible: it forwards bytes + injects two headers
+  (`Authorization`, `X-Hermes-Session-Id`).
+- **Session id** is one per pipeline lifetime. New uuid on pipeline
+  start / restart / kill. Polite stop and cancel preserve the id so
+  the conversation continues on the next start.
