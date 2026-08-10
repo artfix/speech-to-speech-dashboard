@@ -7,6 +7,154 @@ own release cadence.
 
 ## [Unreleased] — Web dashboard
 
+### 0.5.10 — 2026-08-10
+
+- Removed the **Settings** sidebar tab (9 → 8 tabs). Its content moved into a
+  **Configuration** section at the top of the Status & Logs tab, right under
+  the Controls cards (settings file status, Environment Variables editor,
+  Save / Reset / Export / Import / Load Example). Behaviour-neutral: the same
+  standalone functions and the same `web_ui_settings.json` file back it. A
+  stale `#settings` URL hash now falls back to Mode.
+- Mode / VAD / STT / LLM / TTS tabs restyled to group their fields into panel
+  cards matching the other tabs. CSS-only — no field ids, classes, handlers,
+  or DOM structure changed, so disabled-when, the Hermes backend toggle,
+  Ollama keepalive, the model dropdown, and the voice libraries are untouched.
+- Refreshed the HF Space landing page (`index.html`) to v0.5.10 and removed
+  the unreferenced duplicate `app_index.html`. Fixed stale references to the
+  deleted repo-root `web_ui_settings.example.json` (the live example is
+  `web_ui/settings.example.json`, loaded by the Load Example button).
+
+### 0.5.9 — 2026-08-10
+
+- **Hermes tab redesigned into a card dashboard**: a Status row of metric
+  cards (State, Model, Endpoint, Uptime, PID, Port), a Controls row of
+  action cards (Start, Polite Stop, Cancel, Reset session, Open Hermes
+  Dashboard, Kill), and Endpoint / Tuning / Filler / Console / Logs panels.
+- The Hermes **Model card shows the actually-loaded model** (read from
+  `hermes config get`), fetched on paint + start/stop + a 30 s drift timer —
+  not the stale dashboard `--model-name`.
+- `--responses-api-num-ctx` hidden in the LLM tab when the Hermes backend is
+  selected (it is Ollama-native and ignored by the Hermes proxy).
+- Hermes Logs panel respects scroll position (auto-follow only at the
+  bottom).
+- Guide tab redesigned into sub-tabs (one per section) laid out as cards
+  with GFM tables and callout blocks.
+
+### 0.5.8 — 2026-08-09
+
+- Dashboard version bump.
+
+### 0.5.7 — 2026-08-07
+
+- **30 themes** total (10 new color themes + 2 to round up). The theme
+  picker auto-discovers `.css` files in `web_ui/themes/`.
+- Per-flag "Use" checkboxes; default profile switched to llama.cpp + Qwen3;
+  Qwen3 dashboard-side unload.
+- Restored the original upstream `demo/` folder.
+- Removed the unused repo-root `web_ui_settings.example.json` (the live
+  example now lives at `web_ui/settings.example.json`).
+
+### 0.5.6 — 2026-08-07
+
+- Qwen3-TTS unload button support (dashboard-side).
+- Disabled the Hermes filler patch loader and Ollama lifecycle poll by
+  default.
+
+### 0.5.5 — 2026-08-06
+
+- Hermes filler audio runtime patch with configurable delay.
+
+### 0.5.4 — 2026-08-06
+
+- Hermes log tailing, stderr verbosity control, per-phrase filler UI, and
+  tab persistence.
+
+### 0.5.2 — 2026-08-05
+
+- Reasoning-strip parser (strips LLM reasoning tokens from TTS input) +
+  `--responses-api-max-tokens` + LLM tab cleanup.
+
+### 0.5.1 — 2026-08-03
+
+- **Parakeet ONNX STT backend** (`--stt parakeet-onnx`): three NVIDIA Parakeet
+  TDT variants via `onnx-asr` (pure ONNX, no PyTorch for STT) — `v2`
+  (English), `v3` (25 EU langs, default), `v3sq` (int8 SmoothQuant). Auto-
+  install, GPU auto-detect, progressive/final gating. CPU / CUDA only;
+  Apple Silicon keeps `parakeet-tdt`.
+
+### 0.4.3 — 2026-08-03
+
+- **Per-backend LLM request timeout (s)** dropdown on the LLM tab —
+  overrides the pipeline's hardcoded 20 s openai-SDK read timeout.
+- **Ollama model lifecycle section** at the bottom of the LLM tab: live
+  `ollama ps` status + an Unload & reload button (fixes "num_ctx doesn't
+  stick"). Auto-unloads when `--responses-api-num-ctx` changes.
+- Keepalive fix.
+
+### 0.4.2 — 2026-08-03
+
+- Per-backend LLM request timeout plumbed through; the `sitecustomize.py`
+  OpenAI-SDK timeout patch is no longer gated to Hermes-only mode.
+
+### 0.4.1 — 2026-07-30
+
+- **Hermes-only LLM read-timeout knob** (`hermes.read_timeout_s`) via a
+  zero-touch `sitecustomize.py` monkey-patch loaded into the venv on
+  pipeline start, removed on stop.
+- Read-only `--model-name` label when the Hermes backend is selected (the
+  model is chosen via `hermes model` in the terminal).
+
+### 0.4.0 — 2026-07-30
+
+- **Hermes Agent integration**: a new Hermes tab (start/stop/cancel/kill,
+  text console, filler-phrase config) plus an LLM-tab "Backend type"
+  dropdown that auto-fills the reverse-proxy URL and API key. The reverse
+  proxy lives inside the dashboard's own uvicorn — no extra port, process,
+  or dependency. One session id per pipeline lifetime.
+- **Pascal GPU (sm_61) restart-loop fix**: `gpu.py` pins torch to the
+  bundled CPU wheel on Pascal + a runtime CPU fallback for any other CUDA
+  init failure; `process_manager.py` tracks the restart count; the qwen3
+  installer defers its heavy CUDA work until the first TTS request.
+- **Ollama LLM keepalive** (`web_ui/llm_keepalive.py`) pings the endpoint
+  so the model stays loaded in VRAM between turns.
+
+### 0.3.10 — 2026-07-28
+
+- Chatterbox per-sentence split with safer cancel-scope placement.
+
+### 0.3.9 — 2026-07-28
+
+- Reverted per-sentence split in chatterbox TTS to restore realtime audio.
+
+### 0.3.8 — 2026-07-28
+
+- Chatterbox sentence-splitting + split voice library mounts.
+
+### 0.3.7 — 2026-07-28
+
+- Reverted warmup defaults to the original persona-priming strings.
+
+### 0.3.6 — 2026-07-28
+
+- Render warmup prompts as textareas in the dashboard.
+
+### 0.3.5 — 2026-07-28
+
+- Expose warmup system / user prompts in the dashboard.
+
+### 0.3.4 — 2026-07-28
+
+- Fix pipeline warmup timeout; re-enable `num_ctx` on warmup. Curated
+  dropdown for `--responses-api-reasoning-effort`.
+
+### 0.3.3 — 2026-07-28
+
+- Cap the Ollama context window via `--responses-api-num-ctx`.
+
+### 0.3.2 — 2026-07-28
+
+- Ollama model dropdown + one-shot keepalive on Save / Start.
+
 ### 0.3.0 — 2026-07-27
 
 #### Added
@@ -85,6 +233,25 @@ own release cadence.
 
 - **Zero changes to `src/speech_to_speech/`.** Confirmed by
   `git diff --stat main^..main -- src/` returning empty.
+
+### 0.2.2 — 2026-07-27
+
+- Fix inline `?` help buttons on tabs with duplicate flag IDs.
+
+### 0.2.1 — 2026-07-27
+
+- Auto-detect GPU + install the matching torch; auto-fallback for cudnn on
+  Pascal.
+
+### 0.2.0 — 2026-07-23
+
+- **Chatterbox TTS backend** (the sixth TTS backend) with an on-disk voice
+  cloning library (`voices/<name>.pt`): list / clone / delete / test from
+  the dashboard. Three variants: `chatterbox` (English 500M),
+  `chatterbox-turbo` (350M), `chatterbox-nano` (110M). A `UNLOAD_TTS`
+  control message walks the handler chain so only the TTS handler drops
+  the model. One-click install streams the `uv pip install` log into the
+  Status tab.
 
 ### 0.1.3 — 2026-07-23
 

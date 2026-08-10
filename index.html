@@ -331,7 +331,7 @@
         </div>
         <div class="card">
             <h4>💾 Save / Reset / Import / Export</h4>
-            <p>Settings live at <code>web_ui_settings.json</code> in the repo root (gitignored). Atomic write — a crash mid-save can't corrupt the file. A working example is checked in as <code>web_ui_settings.example.json</code> — import it from <strong>Status &amp; Logs → Configuration</strong> to start with a real config instead of bare defaults.</p>
+            <p>Settings live at <code>web_ui_settings.json</code> in the repo root (gitignored). Atomic write — a crash mid-save can't corrupt the file. A working example is checked in as <code>web_ui/settings.example.json</code> — load it from <strong>Status &amp; Logs → Configuration → Load Example</strong> to start with a real config instead of bare defaults.</p>
         </div>
         <div class="card">
             <h4>🚀 Start / Stop / Restart / Shutdown</h4>
@@ -492,7 +492,7 @@ start_web_ui.bat</code></pre>
         <tr><td><code>src/speech_to_speech/TTS/</code></td><td>All six TTS backends, including <code>chatterbox_tts_handler.py</code> and <code>qwen3_tts_handler.py</code></td></tr>
         <tr><td><code>src/speech_to_speech/api/openai_realtime/</code></td><td>The Realtime WebSocket / WebRTC server</td></tr>
         <tr><td><code>voices/</code></td><td>Cloned Chatterbox + uploaded qwen3 reference audio (gitignored, created on first upload)</td></tr>
-        <tr><td><code>web_ui_settings.example.json</code></td><td>Working settings example (Ollama + qwen3-TTS + parakeet STT). Import from Status &amp; Logs → Configuration.</td></tr>
+        <tr><td><code>web_ui/settings.example.json</code></td><td>Working settings example (llama.cpp + qwen3-TTS + parakeet STT, realtime mode). Load from Status &amp; Logs → Configuration → Load Example.</td></tr>
 <tr><td><code>web_ui_settings.json</code></td><td>Saved dashboard settings (gitignored, atomic write, created on first Save)</td></tr>
     </table>
 

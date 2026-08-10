@@ -704,7 +704,7 @@ is not touched by these). Newest first.
 - **Guide tab redesigned** into sub-tabs (one per top-level section) with
   each section laid out as cards, real GFM tables, and callout blocks.
 
-## 0.5.0
+## 0.5.1
 
 - **Parakeet ONNX STT backend** (`--stt parakeet-onnx`). Three NVIDIA
   Parakeet TDT variants via `onnx-asr` (pure ONNX, no PyTorch needed
