@@ -195,7 +195,7 @@
         position: relative;
     }
     .feature-block.new::before {
-        content: "NEW in v0.4.0";
+        content: "NEW in v0.5.10";
         position: absolute;
         top: -10px; left: 24px;
         background: var(--accent);
@@ -263,15 +263,16 @@
 
     <section class="hero">
         <h1>speech-to-speech</h1>
-        <p class="tagline">An open, real-time voice agent pipeline with a browser dashboard.<br>Now with Hermes Agent integration (proxy, tab, LLM read-timeout knob) and a Pascal GPU restart-loop fix.</p>
+        <p class="tagline">An open, real-time voice agent pipeline with a card-based browser dashboard.<br>Hermes Agent integration, Parakeet ONNX STT, 30 themes, and a unified Status &amp; Logs control surface.</p>
         <div class="badges">
-            <span class="badge green">v0.4.1</span>
+            <span class="badge green">v0.5.10</span>
             <span class="badge cyan">VAD → STT → LLM → TTS</span>
             <span class="badge pink">Realtime WebSocket</span>
             <span class="badge">Hermes Agent</span>
             <span class="badge">6 TTS backends</span>
             <span class="badge">9 qwen3 voices</span>
-            <span class="badge">18 themes</span>
+            <span class="badge">30 themes</span>
+            <span class="badge">Card dashboard</span>
             <span class="badge">Linux / Windows</span>
         </div>
         <div class="cta-row">
@@ -314,7 +315,7 @@
     <div class="grid">
         <div class="card">
             <h4>🎚️ Tabs for everything</h4>
-            <p>Mode, VAD, STT, LLM, TTS, Advanced, Status &amp; Logs, Guide, Settings, Control — every backend has its own sub-form that swaps in when you pick it.</p>
+            <p>Mode, VAD, STT, LLM, TTS, Status &amp; Logs, Hermes, Guide — every backend has its own sub-form that swaps in when you pick it. The old Control, Settings, and Advanced tabs were folded into Status &amp; Logs, and every tab now shares the same card-based layout.</p>
         </div>
         <div class="card">
             <h4>📡 Realtime pool status</h4>
@@ -325,12 +326,12 @@
             <p>Filter by level, toggle verbose (<code>--log-level debug</code>), watch the pipeline come up in real time.</p>
         </div>
         <div class="card">
-            <h4>🎨 18 cyberpunk themes</h4>
-            <p>Cyberpunk Neon (default), Matrix, Synthwave, Blade Runner, Tron, Vaporwave, Hacker Terminal, Dark Glass — drop a new <code>.css</code> in <code>web_ui/themes/</code> and it appears in the picker.</p>
+            <h4>🎨 30 cyberpunk themes</h4>
+            <p>Cyberpunk Neon (default), Matrix, Synthwave, Blade Runner, Tron, Vaporwave, Hacker Terminal, Dark Glass and more — drop a new <code>.css</code> in <code>web_ui/themes/</code> and it appears in the picker automatically.</p>
         </div>
         <div class="card">
             <h4>💾 Save / Reset / Import / Export</h4>
-            <p>Settings live at <code>web_ui_settings.json</code> in the repo root (gitignored). Atomic write — a crash mid-save can't corrupt the file. A working example is checked in as <code>web_ui_settings.example.json</code> — import it from the Settings tab to start with a real config instead of bare defaults.</p>
+            <p>Settings live at <code>web_ui_settings.json</code> in the repo root (gitignored). Atomic write — a crash mid-save can't corrupt the file. A working example is checked in as <code>web_ui_settings.example.json</code> — import it from <strong>Status &amp; Logs → Configuration</strong> to start with a real config instead of bare defaults.</p>
         </div>
         <div class="card">
             <h4>🚀 Start / Stop / Restart / Shutdown</h4>
@@ -344,6 +345,33 @@
             <h4>⏱️ Hermes LLM read-timeout knob</h4>
             <p>The pipeline's hardcoded 20 s OpenAI read timeout made Hermes look "stuck in a loop" on long passages. The dashboard now ships a <code>hermes.read_timeout_s</code> setting (<code>0</code> = wait forever). Implemented as a zero-touch monkey-patch loaded into the venv via <code>sitecustomize.py</code> on pipeline startup — no edits to <code>src/</code>.</p>
         </div>
+    </div>
+
+    <h2>What's new in v0.5.x</h2>
+
+    <div class="feature-block new">
+        <h3>🃏 Card-based dashboard, unified across every tab</h3>
+        <p>The whole dashboard now shares one card-based layout. Status &amp; Logs, Hermes, and Guide were rebuilt into metric cards, action cards, and panel cards; the Mode / VAD / STT / LLM / TTS tabs group their fields into the same bordered, centered panels. The settings-tab restyle was a CSS-only change — no field ids, handlers, or form logic moved — so disabled-when rules, the Hermes backend toggle, Ollama keepalive, the model dropdown, and the voice libraries all keep working unchanged.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>🎛️ One Status &amp; Logs tab for every control</h3>
+        <p>The old Control, Settings, and Advanced tabs are gone. Status &amp; Logs now holds it all at the top: live metric cards (state, PID, uptime, model, endpoint, port), a <strong>Controls</strong> row of action cards (Start / Stop / Restart / Unload-TTS / Shutdown), and a <strong>Configuration</strong> section right under it with the Environment Variables editor and the Save / Reset / Export / Import / Load Example buttons — so you never scroll to the bottom to find Save. The sidebar dropped from 9 tabs to 8.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>🤖 Hermes tab: real loaded model + shared text/voice chat</h3>
+        <p>The Hermes tab is now a card dashboard with a Status row (State, Model, Endpoint, Uptime, PID, Port) and a Controls row. The Model card shows the model Hermes <em>actually</em> has loaded (read from <code>hermes config get</code>), not the stale dashboard <code>--model-name</code> — fetched on paint, on start/stop, and on a 30 s drift timer to catch terminal <code>hermes model</code> swaps. The text chat shares the live voice session through the reverse proxy, with a rich live-activity console. Logs respect your scroll position: scroll up to read older lines, resume auto-follow at the bottom.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>📖 Guide tab redesigned + 🎤 Parakeet ONNX STT</h3>
+        <p>The in-app Guide is now sub-tabs (one per top-level section) laid out as cards with real GFM tables and callout blocks. Plus a new <strong>Parakeet ONNX STT backend</strong> (<code>--stt parakeet-onnx</code>): three NVIDIA Parakeet TDT variants via <code>onnx-asr</code> (pure ONNX, no PyTorch needed for STT) — <code>v2</code> (English), <code>v3</code> (25 EU langs, default), <code>v3sq</code> (int8 SmoothQuant, best for long audio). CPU / CUDA only; Apple Silicon keeps <code>parakeet-tdt</code>.</p>
+    </div>
+
+    <div class="feature-block new">
+        <h3>🔁 Ollama lifecycle · ⏱️ LLM request timeout · 🎨 30 themes</h3>
+        <p>The LLM tab's Ollama lifecycle section auto-unloads idle models and offers a one-click Reload. A per-backend <strong>LLM request timeout</strong> knob replaces the pipeline's hardcoded 20 s read timeout (the zero-touch <code>sitecustomize.py</code> monkey-patch, now ungated from Hermes-only mode). And the theme picker now ships <strong>30 cyberpunk themes</strong> — drop a new <code>.css</code> in <code>web_ui/themes/</code> and it appears in the picker automatically.</p>
     </div>
 
     <h2>What's new in v0.4.0</h2>
@@ -362,8 +390,8 @@
 
     <div class="feature-block new">
         <h3>🛠️ Pascal GPU restart-loop fix</h3>
-        <p>On Pascal (<code>sm_61</code>) GPUs, clicking <strong>Start Pipeline</strong> on the Control tab triggered an infinite restart loop: torch's CUDA context blew up on init, the watchdog saw a non-zero exit, relaunched, watched it die again, and the only way out was killing the dashboard.</p>
-        <p>Four-file fix: <code>web_ui/gpu.py</code> now detects Pascal and pins torch to the bundled CPU-friendly wheel (<code>torch==2.4.1+cpu</code>) on install, plus a runtime CPU fallback for any other CUDA init failure. <code>process_manager.py</code> tracks the restart count and surfaces it on the Control tab so you can see the loop in the dashboard. <code>qwentts_installer.py</code> defers its heavy CUDA work until the first TTS request instead of at pipeline start (so a CUDA-init failure no longer kills startup before the pipeline ever gets a chance to run). Startup logs now print a one-line <code>"GPU init failed, falling back to CPU (…)"</code> banner so the cause is obvious.</p>
+        <p>On Pascal (<code>sm_61</code>) GPUs, clicking <strong>Start Pipeline</strong> on the Status & Logs tab triggered an infinite restart loop: torch's CUDA context blew up on init, the watchdog saw a non-zero exit, relaunched, watched it die again, and the only way out was killing the dashboard.</p>
+        <p>Four-file fix: <code>web_ui/gpu.py</code> now detects Pascal and pins torch to the bundled CPU-friendly wheel (<code>torch==2.4.1+cpu</code>) on install, plus a runtime CPU fallback for any other CUDA init failure. <code>process_manager.py</code> tracks the restart count and surfaces it on the Status & Logs tab so you can see the loop in the dashboard. <code>qwentts_installer.py</code> defers its heavy CUDA work until the first TTS request instead of at pipeline start (so a CUDA-init failure no longer kills startup before the pipeline ever gets a chance to run). Startup logs now print a one-line <code>"GPU init failed, falling back to CPU (…)"</code> banner so the cause is obvious.</p>
     </div>
 
     <div class="feature-block new">
@@ -421,7 +449,7 @@
 
     <div class="feature-block new">
         <h3>🧹 Hot-unload the TTS model</h3>
-        <p>Chatterbox Turbo holds ~700 MB of RAM; the full English variant is ~1 GB. If you're RAM-constrained, click <strong>Unload TTS Model</strong> on the Control tab — the model is dropped from RAM without killing the pipeline. The next TTS request reloads it transparently (~15–20s on CPU).</p>
+        <p>Chatterbox Turbo holds ~700 MB of RAM; the full English variant is ~1 GB. If you're RAM-constrained, click <strong>Unload TTS Model</strong> on the Status & Logs tab — the model is dropped from RAM without killing the pipeline. The next TTS request reloads it transparently (~15–20s on CPU).</p>
         <p style="color: var(--text-dim); font-size: 0.9rem;">Implemented as a <code>UNLOAD_TTS</code> control message that walks the entire handler chain (VAD → STT → … → TTS). Each non-TTS handler's <code>on_unload()</code> is a no-op; only the TTS handler actually drops the model.</p>
     </div>
 
@@ -464,7 +492,7 @@ start_web_ui.bat</code></pre>
         <tr><td><code>src/speech_to_speech/TTS/</code></td><td>All six TTS backends, including <code>chatterbox_tts_handler.py</code> and <code>qwen3_tts_handler.py</code></td></tr>
         <tr><td><code>src/speech_to_speech/api/openai_realtime/</code></td><td>The Realtime WebSocket / WebRTC server</td></tr>
         <tr><td><code>voices/</code></td><td>Cloned Chatterbox + uploaded qwen3 reference audio (gitignored, created on first upload)</td></tr>
-        <tr><td><code>web_ui_settings.example.json</code></td><td>Working settings example (Ollama + qwen3-TTS + parakeet STT). Import from Settings tab.</td></tr>
+        <tr><td><code>web_ui_settings.example.json</code></td><td>Working settings example (Ollama + qwen3-TTS + parakeet STT). Import from Status &amp; Logs → Configuration.</td></tr>
 <tr><td><code>web_ui_settings.json</code></td><td>Saved dashboard settings (gitignored, atomic write, created on first Save)</td></tr>
     </table>
 
@@ -472,7 +500,7 @@ start_web_ui.bat</code></pre>
     <p>This fork powers the conversation backend for the <a href="https://huggingface.co/blog/reachy-mini" target="_blank" rel="noopener">Reachy Mini</a> robot. The conversation app in <code>demo/</code> talks to the same <code>ws://&lt;host&gt;:8765/v1/realtime</code> endpoint, so the moment your dashboard's pipeline is up, the robot can use your cloned Chatterbox voice.</p>
     <pre><code># In one terminal: the dashboard + pipeline
 ./start_web_ui.sh
-# Click "Start Pipeline" on the Control tab.
+# Click "Start Pipeline" on the Status & Logs tab.
 
 # In another terminal: the conversation app
 uv run uvicorn --app-dir demo server:app --port 7860
